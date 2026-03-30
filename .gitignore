@@ -1,0 +1,14 @@
+# Node dependencies
+node_modules/
+
+# Credentials / Secrets - WAJIB DISINI
+.env
+.env.local
+
+# Build files
+dist/
+build/
+
+# OS specific
+.DS_Store
+Thumbs.db
