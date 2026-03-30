@@ -1,0 +1,56 @@
+@import "tailwindcss";
+
+:root {
+  --primary: #0ea5e9;
+  --bg-main: #0b0e14;
+  --sidebar-bg: #0d1117;
+  --card-bg: #151921;
+  --card-border: rgba(255, 255, 255, 0.05);
+  --text-main: #ffffff;
+  --text-muted: #94a3b8;
+  --sidebar-active: #1e293b;
+}
+
+.light {
+  --bg-main: #f8fafc;
+  --sidebar-bg: #ffffff;
+  --card-bg: #ffffff;
+  --card-border: rgba(0, 0, 0, 0.05);
+  --text-main: #0f172a;
+  --text-muted: #64748b;
+  --sidebar-active: #f1f5f9;
+}
+
+@theme {
+  --color-primary: var(--primary);
+  --color-bg-main: var(--bg-main);
+  --color-sidebar: var(--sidebar-bg);
+  --color-sidebar-active: var(--sidebar-active);
+  --color-card: var(--card-bg);
+  --color-card-border: var(--card-border);
+  --color-text-main: var(--text-main);
+  --color-text-muted: var(--text-muted);
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+* {
+  transition: background-color 0.3s ease, border-color 0.3s ease, color 0.1s ease;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background-color: var(--bg-main);
+  color: var(--text-main);
+  -webkit-font-smoothing: antialiased;
+}
+
+.card-gradient {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+}
+
+.card-glow:hover {
+  box-shadow: 0 0 20px rgba(14, 165, 233, 0.1);
+  border-color: rgba(14, 165, 233, 0.2);
+}
