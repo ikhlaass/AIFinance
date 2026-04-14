@@ -12,8 +12,9 @@ const CategoryChart = ({ type, label }) => {
       data: [100, 0],
       backgroundColor: [isExpense ? '#f43f5e' : '#10b981', 'var(--card-border)'],
       borderWidth: 0,
-      hoverOffset: 4,
-      cutout: '75%',
+      hoverOffset: 6,
+      cutout: '80%',
+      borderRadius: 20, // Membuat ujung donat tumpul layaknya sosis
     }]
   });
 
@@ -38,9 +39,10 @@ const CategoryChart = ({ type, label }) => {
             datasets: [{
               data: data.map(d => Number(d.total)),
               backgroundColor: bgColors,
-              borderWidth: 0,
-              hoverOffset: 4,
-              cutout: '75%',
+              borderWidth: 0, // Matikan border garis karena terbaca hitam oleh Canvas
+              hoverOffset: 6,
+              cutout: '80%',
+              borderRadius: 20, // Tumpul bulat di setiap irisan
             }]
           });
         }
@@ -58,10 +60,10 @@ const CategoryChart = ({ type, label }) => {
   };
 
   return (
-    <div className="relative w-32 h-32 mx-auto">
+    <div className="relative w-40 h-40 mx-auto drop-shadow-2xl transition-transform hover:scale-105 duration-300">
       <Doughnut data={chartData} options={options} />
       <div className="absolute inset-0 flex items-center justify-center flex-col pointer-events-none">
-        <span className="text-[10px] uppercase font-bold text-text-muted">{label}</span>
+        <span className="text-[10px] uppercase font-black text-text-main tracking-widest">{label}</span>
       </div>
     </div>
   );

@@ -1,35 +1,48 @@
-import React, { useState, useEffect } from 'react';
-import Layout from './components/Layout';
-import Dashboard from './pages/Dashboard';
+import React, { useState, useEffect } from "react";
+import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
+import Layout from "./components/Layout";
+import Dashboard from "./pages/Dashboard";
+import Transactions from "./pages/Transactions";
+import Assets from "./pages/Assets";
+import Debts from "./pages/Debts";
 
 function App() {
-  const [theme, setTheme] = useState(localStorage.getItem('theme') || 'dark');
+  const [theme, setTheme] = useState(localStorage.getItem("theme") || "dark");
 
   useEffect(() => {
-    // Notify Telegram that the Mini App is fully loaded and ready to be displayed
     if (window.Telegram && window.Telegram.WebApp) {
       window.Telegram.WebApp.ready();
-      window.Telegram.WebApp.expand(); // Make it full height natively
+      window.Telegram.WebApp.expand();
     }
 
-    localStorage.setItem('theme', theme);
-    if (theme === 'light') {
-      document.documentElement.classList.add('light');
+    localStorage.setItem("theme", theme);
+    if (theme === "light") {
+      document.documentElement.classList.add("light");
     } else {
-      document.documentElement.classList.remove('light');
+      document.documentElement.classList.remove("light");
     }
   }, [theme]);
 
   const toggleTheme = () => {
-    setTheme(prev => prev === 'dark' ? 'light' : 'dark');
+    setTheme((prev) => (prev === "dark" ? "light" : "dark"));
   };
 
   return (
-    <div className="w-full h-full transition-colors duration-300">
-      <Layout theme={theme} toggleTheme={toggleTheme}>
-        <Dashboard theme={theme} />
-      </Layout>
-    </div>
+    <Router>
+      <div className="w-full h-full transition-colors duration-300">
+        <Layout theme={theme} toggleTheme={toggleTheme}>
+          <Routes>
+            <Route path="/" element={<Dashboard theme={theme} />} />
+            <Route
+              path="/transactions"
+              element={<Transactions theme={theme} />}
+            />
+            <Route path="/assets" element={<Assets theme={theme} />} />
+            <Route path="/debts" element={<Debts theme={theme} />} />
+          </Routes>
+        </Layout>
+      </div>
+    </Router>
   );
 }
 
