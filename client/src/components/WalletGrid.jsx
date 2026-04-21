@@ -19,7 +19,7 @@ const WalletItem = ({ wallet, onDelete }) => {
   const isNegative = Number(wallet.balance) < 0;
 
   return (
-    <div className="group relative flex items-center justify-between p-3 px-4 rounded-2xl bg-card border border-card-border hover:border-primary/30 transition-all duration-500 shadow-lg hover:shadow-primary/5 min-h-[60px] overflow-hidden">
+    <div className="group relative flex items-center justify-between p-3 px-4 rounded-2xl bg-card border border-card-border hover:border-primary/30 transition-all duration-500 shadow-[0_10px_28px_rgba(15,23,42,0.08)] hover:shadow-[0_14px_36px_rgba(15,23,42,0.10)] min-h-[60px] overflow-hidden">
       <div className="relative z-10 flex items-center gap-3">
         <div className="w-8 h-8 bg-primary/10 rounded-xl flex items-center justify-center text-primary group-hover:bg-primary group-hover:text-white transition-all duration-500 shadow-inner">
           <Wallet size={14} />
@@ -138,7 +138,7 @@ const WalletGrid = () => {
         {/* ADD WALLET BUTTON CARD */}
         <button
           onClick={() => setIsModalOpen(true)}
-          className="flex items-center justify-center gap-3 p-3 px-6 rounded-2xl border border-dashed border-card-border bg-card/50 hover:border-primary hover:bg-primary/5 transition-all duration-500 text-text-muted hover:text-primary group min-h-[60px]"
+          className="flex items-center justify-center gap-3 p-3 px-6 rounded-2xl border border-dashed border-card-border bg-card/50 hover:border-primary hover:bg-primary/5 transition-all duration-500 text-text-muted hover:text-primary group min-h-[60px] shadow-[0_10px_28px_rgba(15,23,42,0.08)] hover:shadow-[0_14px_36px_rgba(15,23,42,0.10)]"
         >
           <Plus
             size={16}
@@ -165,7 +165,7 @@ const WalletGrid = () => {
             className="absolute inset-0 bg-black/40 backdrop-blur-sm animate-in fade-in duration-300"
             onClick={() => setIsModalOpen(false)}
           />
-          <div className="relative w-full max-w-sm bg-card border border-card-border rounded-[2.5rem] shadow-2xl p-10 animate-in zoom-in-95 duration-300 text-text-main">
+          <div className="relative w-full max-w-sm bg-card border border-card-border rounded-[2.5rem] shadow-[0_16px_40px_rgba(15,23,42,0.12)] p-10 animate-in zoom-in-95 duration-300 text-text-main">
             <div className="flex justify-between items-center mb-8">
               <div>
                 <h2 className="text-2xl font-bold text-text-main tracking-tight">

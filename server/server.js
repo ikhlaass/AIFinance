@@ -30,6 +30,123 @@ const CURATED_TICKER_SUGGESTIONS = [
 ];
 
 const toIso = (value) => new Date(value).toISOString();
+const toDateOnly = (value) => new Date(value).toISOString().split("T")[0];
+const roundMoney = (value) => Math.round((Number(value) || 0) * 100) / 100;
+
+function shiftMonths(dateValue, months) {
+  const base = new Date(`${toDateOnly(dateValue)}T00:00:00`);
+  base.setMonth(base.getMonth() + months);
+  return base;
+}
+
+function parseReportPeriod(period, startDate, endDate) {
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth();
+
+  let start;
+  let end;
+  let label;
+
+  if (period === "custom" && startDate && endDate) {
+    start = new Date(`${startDate}T00:00:00`);
+    end = new Date(`${endDate}T00:00:00`);
+    label = "Custom";
+  } else if (period === "last-3-months") {
+    start = new Date(currentYear, currentMonth - 2, 1);
+    end = now;
+    label = "3 Bulan Terakhir";
+  } else if (period === "this-year") {
+    start = new Date(currentYear, 0, 1);
+    end = now;
+    label = "Tahun Ini";
+  } else {
+    start = new Date(currentYear, currentMonth, 1);
+    end = now;
+    label = "Bulan Ini";
+  }
+
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    const fallbackStart = new Date(currentYear, currentMonth, 1);
+    return {
+      periodKey: "this-month",
+      label: "Bulan Ini",
+      startDate: toDateOnly(fallbackStart),
+      endDate: toDateOnly(now),
+    };
+  }
+
+  if (start > end) {
+    [start, end] = [end, start];
+  }
+
+  return {
+    periodKey: period || "this-month",
+    label,
+    startDate: toDateOnly(start),
+    endDate: toDateOnly(end),
+  };
+}
+
+function addMonthsToDate(dateValue, months) {
+  const date = new Date(`${toDateOnly(dateValue)}T00:00:00`);
+  date.setMonth(date.getMonth() + Number(months || 0));
+  return toDateOnly(date);
+}
+
+function calculateDebtSnapshot(
+  principal,
+  annualInterestRate,
+  tenorMonths,
+  elapsedMonths,
+) {
+  const principalValue = Number(principal) || 0;
+  const rate = Number(annualInterestRate) || 0;
+  const tenorValue = Math.max(1, Number(tenorMonths) || 0);
+  const elapsedValue = Math.max(0, Number(elapsedMonths) || 0);
+  const monthlyRate = rate > 0 ? rate / 12 / 100 : 0;
+
+  const monthlyPayment =
+    monthlyRate > 0
+      ? principalValue *
+        (monthlyRate / (1 - Math.pow(1 + monthlyRate, -tenorValue)))
+      : principalValue / tenorValue;
+
+  const paidMonths = Math.min(elapsedValue, tenorValue);
+  const rawPaidAmount = monthlyPayment * paidMonths;
+  const paidAmount = roundMoney(Math.min(principalValue, rawPaidAmount));
+  const remainingAmount = roundMoney(Math.max(0, principalValue - paidAmount));
+
+  return {
+    monthlyPayment: roundMoney(monthlyPayment),
+    paidMonths,
+    paidAmount,
+    remainingAmount,
+    status: remainingAmount <= 0 ? "paid" : "active",
+  };
+}
+
+function normalizeDebtRow(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    type: row.type,
+    status: row.status,
+    principal: Number(row.principal) || 0,
+    monthly: Number(row.monthly_payment) || 0,
+    paid: Number(row.paid_amount) || 0,
+    remaining: Number(row.remaining_amount) || 0,
+    interestRate: Number(row.annual_interest_rate) || 0,
+    tenorMonths: Number(row.tenor_months) || 0,
+    startDate: row.start_date ? toDateOnly(row.start_date) : null,
+    walletId: row.wallet_id || null,
+    walletName: row.wallet_name || null,
+    notes: row.notes || "",
+    elapsedMonths: Number(row.elapsed_months) || 0,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
 
 async function getMarketQuoteInIdr(ticker, options = {}) {
   const { forceRefresh = false } = options;
@@ -582,6 +699,218 @@ app.get("/api/categories/:type", async (req, res) => {
   }
 });
 
+app.get("/api/reports/overview", async (req, res) => {
+  try {
+    const period = String(req.query.period || "this-month");
+    const startDate = req.query.start_date;
+    const endDate = req.query.end_date;
+    const range = parseReportPeriod(period, startDate, endDate);
+
+    const [incomeRows] = await db.query(
+      `SELECT COALESCE(SUM(amount), 0) AS total
+       FROM transactions
+       WHERE user_id = 1 AND type = 'income' AND transaction_date BETWEEN ? AND ?`,
+      [range.startDate, range.endDate],
+    );
+
+    const [expenseRows] = await db.query(
+      `SELECT COALESCE(SUM(amount), 0) AS total
+       FROM transactions
+       WHERE user_id = 1 AND type = 'expense' AND transaction_date BETWEEN ? AND ?`,
+      [range.startDate, range.endDate],
+    );
+
+    const [investmentRows] = await db.query(
+      `SELECT COALESCE(
+          SUM(
+            CASE
+              WHEN type = 'market' THEN quantity * purchase_price
+              ELSE total_value
+            END
+          ), 0
+        ) AS total
+       FROM assets
+       WHERE user_id = 1
+         AND DATE(COALESCE(transaction_date, created_at)) BETWEEN ? AND ?`,
+      [range.startDate, range.endDate],
+    );
+
+    const [walletRows] = await db.query(
+      `SELECT COALESCE(SUM(balance), 0) AS total
+       FROM wallets
+       WHERE user_id = 1 AND is_active = 1`,
+    );
+
+    const [liabilityRows] = await db.query(
+      `SELECT COALESCE(SUM(remaining_amount), 0) AS total
+       FROM debts
+       WHERE user_id = 1 AND status = 'active'`,
+    );
+
+    const [assetRows] = await db.query(
+      `SELECT type, ticker, quantity, total_value, purchase_price
+       FROM assets
+       WHERE user_id = 1`,
+    );
+
+    let totalAssets = 0;
+    for (const asset of assetRows) {
+      if (asset.type === "market" && asset.ticker) {
+        try {
+          const { unitPriceIdr } = await getMarketQuoteInIdr(asset.ticker);
+          totalAssets += unitPriceIdr * Number(asset.quantity || 0);
+        } catch (err) {
+          totalAssets +=
+            Number(asset.purchase_price || 0) * Number(asset.quantity || 0);
+        }
+      } else {
+        totalAssets += Number(asset.total_value || 0);
+      }
+    }
+
+    const [trendTxRows] = await db.query(
+      `SELECT DATE_FORMAT(transaction_date, '%Y-%m') AS ym,
+              SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END) AS income,
+              SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END) AS expense
+       FROM transactions
+       WHERE user_id = 1 AND transaction_date BETWEEN ? AND ?
+       GROUP BY ym
+       ORDER BY ym ASC`,
+      [range.startDate, range.endDate],
+    );
+
+    const [trendInvestmentRows] = await db.query(
+      `SELECT DATE_FORMAT(DATE(COALESCE(transaction_date, created_at)), '%Y-%m') AS ym,
+              COALESCE(SUM(
+                CASE
+                  WHEN type = 'market' THEN quantity * purchase_price
+                  ELSE total_value
+                END
+              ), 0) AS investment
+       FROM assets
+       WHERE user_id = 1
+         AND DATE(COALESCE(transaction_date, created_at)) BETWEEN ? AND ?
+       GROUP BY ym
+       ORDER BY ym ASC`,
+      [range.startDate, range.endDate],
+    );
+
+    const [incomeCategoryRows] = await db.query(
+      `SELECT category, COALESCE(SUM(amount), 0) AS total
+       FROM transactions
+       WHERE user_id = 1 AND type = 'income' AND transaction_date BETWEEN ? AND ?
+       GROUP BY category
+       ORDER BY total DESC
+       LIMIT 8`,
+      [range.startDate, range.endDate],
+    );
+
+    const [expenseCategoryRows] = await db.query(
+      `SELECT category, COALESCE(SUM(amount), 0) AS total
+       FROM transactions
+       WHERE user_id = 1 AND type = 'expense' AND transaction_date BETWEEN ? AND ?
+       GROUP BY category
+       ORDER BY total DESC
+       LIMIT 8`,
+      [range.startDate, range.endDate],
+    );
+
+    const [merchantRows] = await db.query(
+      `SELECT COALESCE(NULLIF(TRIM(description), ''), category, 'Lainnya') AS merchant,
+              COALESCE(SUM(amount), 0) AS total,
+              COUNT(*) AS count
+       FROM transactions
+       WHERE user_id = 1 AND type = 'expense' AND transaction_date BETWEEN ? AND ?
+       GROUP BY merchant
+       ORDER BY total DESC
+       LIMIT 8`,
+      [range.startDate, range.endDate],
+    );
+
+    const income = Number(incomeRows[0]?.total) || 0;
+    const expense = Number(expenseRows[0]?.total) || 0;
+    const investment = Number(investmentRows[0]?.total) || 0;
+    const netCashFlow = income - expense;
+    const savingsRate = income > 0 ? ((income - expense) / income) * 100 : 0;
+
+    const cashBalance = Number(walletRows[0]?.total) || 0;
+    const totalLiabilities = Number(liabilityRows[0]?.total) || 0;
+    const netWorth = cashBalance + totalAssets - totalLiabilities;
+
+    const trendMap = new Map();
+    for (const row of trendTxRows) {
+      trendMap.set(row.ym, {
+        month: row.ym,
+        income: Number(row.income) || 0,
+        expense: Number(row.expense) || 0,
+        investment: 0,
+      });
+    }
+
+    for (const row of trendInvestmentRows) {
+      if (!trendMap.has(row.ym)) {
+        trendMap.set(row.ym, {
+          month: row.ym,
+          income: 0,
+          expense: 0,
+          investment: Number(row.investment) || 0,
+        });
+      } else {
+        const current = trendMap.get(row.ym);
+        current.investment = Number(row.investment) || 0;
+      }
+    }
+
+    const monthlyTrend = Array.from(trendMap.values())
+      .sort((a, b) => a.month.localeCompare(b.month))
+      .map((item) => ({
+        ...item,
+        net: item.income - item.expense,
+      }));
+
+    res.json({
+      period: range,
+      summary: {
+        income,
+        expense,
+        investment,
+        netCashFlow,
+        savingsRate,
+      },
+      position: {
+        totalAssets,
+        totalLiabilities,
+        netWorth,
+      },
+      monthlyTrend,
+      categories: {
+        income: incomeCategoryRows.map((row) => ({
+          category: row.category || "Lainnya",
+          total: Number(row.total) || 0,
+        })),
+        expense: expenseCategoryRows.map((row) => ({
+          category: row.category || "Lainnya",
+          total: Number(row.total) || 0,
+        })),
+      },
+      topMerchants: merchantRows.map((row) => ({
+        merchant: row.merchant || "Lainnya",
+        total: Number(row.total) || 0,
+        count: Number(row.count) || 0,
+      })),
+      comparison: {
+        income,
+        investment,
+        expense,
+        net: income - expense,
+      },
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
 app.get("/api/market/suggest", async (req, res) => {
   try {
     const q = String(req.query.q || "").trim();
@@ -628,6 +957,221 @@ app.get("/api/market/suggest", async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Gagal mencari ticker" });
+  }
+});
+
+app.get("/api/debts", async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      `SELECT d.*, w.name AS wallet_name
+       FROM debts d
+       LEFT JOIN wallets w ON w.id = d.wallet_id
+       WHERE d.user_id = 1
+       ORDER BY d.created_at DESC, d.id DESC`,
+    );
+
+    res.json(rows.map(normalizeDebtRow));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
+app.get("/api/debts/installments", async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      `SELECT di.id, di.debt_id, d.name AS debt_name, di.amount, di.paid_at as date, di.notes
+       FROM debt_installments di
+       INNER JOIN debts d ON d.id = di.debt_id
+       WHERE di.user_id = 1
+       ORDER BY di.paid_at DESC, di.id DESC`,
+    );
+
+    res.json(
+      rows.map((row) => ({
+        id: row.id,
+        debtId: row.debt_id,
+        debtName: row.debt_name,
+        amount: Number(row.amount) || 0,
+        date: row.date,
+        notes: row.notes || "",
+      })),
+    );
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
+app.post("/api/debts", async (req, res) => {
+  const connection = await db.getConnection();
+  try {
+    const {
+      name,
+      type,
+      debtType,
+      principal,
+      annualInterestRate,
+      interestRate,
+      tenorMonths,
+      startDate,
+      walletId,
+      notes,
+      elapsedMonths = 0,
+    } = req.body;
+
+    const cleanName = String(name || "").trim();
+    const debtTypeValue = String(debtType || type || "other");
+    const principalValue = Number(principal);
+    const interestRateValue = Number(interestRate ?? annualInterestRate ?? 0);
+    const tenorMonthsValue = Number(tenorMonths);
+    const elapsedMonthsValue = Number(elapsedMonths || 0);
+    const startDateValue = startDate
+      ? toDateOnly(startDate)
+      : toDateOnly(new Date());
+    const walletIdValue = walletId ? Number(walletId) : null;
+
+    if (!cleanName) {
+      return res.status(400).json({ error: "Nama hutang wajib diisi" });
+    }
+    if (!Number.isFinite(principalValue) || principalValue <= 0) {
+      return res.status(400).json({ error: "Pokok hutang tidak valid" });
+    }
+    if (!Number.isFinite(tenorMonthsValue) || tenorMonthsValue <= 0) {
+      return res.status(400).json({ error: "Tenor tidak valid" });
+    }
+    if (!Number.isFinite(interestRateValue) || interestRateValue < 0) {
+      return res.status(400).json({ error: "Bunga tidak valid" });
+    }
+
+    const snapshot = calculateDebtSnapshot(
+      principalValue,
+      interestRateValue,
+      tenorMonthsValue,
+      elapsedMonthsValue,
+    );
+
+    await connection.beginTransaction();
+
+    if (walletIdValue) {
+      const [walletRows] = await connection.query(
+        `SELECT id FROM wallets WHERE id = ? AND user_id = 1 LIMIT 1`,
+        [walletIdValue],
+      );
+
+      if (walletRows.length === 0) {
+        await connection.rollback();
+        return res.status(404).json({ error: "Dompet tidak ditemukan" });
+      }
+    }
+
+    const [insertResult] = await connection.query(
+      `INSERT INTO debts (
+        user_id, name, type, principal, annual_interest_rate, tenor_months,
+        monthly_payment, paid_amount, remaining_amount, elapsed_months, status,
+        start_date, wallet_id, notes
+      ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        cleanName,
+        debtTypeValue,
+        principalValue,
+        interestRateValue,
+        tenorMonthsValue,
+        snapshot.monthlyPayment,
+        snapshot.paidAmount,
+        snapshot.remainingAmount,
+        snapshot.paidMonths,
+        snapshot.status,
+        startDateValue,
+        walletIdValue,
+        notes ? String(notes).trim() : null,
+      ],
+    );
+
+    const debtId = insertResult.insertId;
+    const installmentRows = [];
+
+    for (let index = 0; index < snapshot.paidMonths; index += 1) {
+      const isLast = index === snapshot.paidMonths - 1;
+      const priorPaid = snapshot.monthlyPayment * index;
+      const amount = isLast
+        ? roundMoney(Math.max(0, snapshot.paidAmount - priorPaid))
+        : snapshot.monthlyPayment;
+
+      if (amount <= 0) continue;
+
+      installmentRows.push([
+        debtId,
+        1,
+        amount,
+        addMonthsToDate(startDateValue, index + 1),
+        `Cicilan ${index + 1}`,
+      ]);
+    }
+
+    if (installmentRows.length > 0) {
+      await connection.query(
+        `INSERT INTO debt_installments (debt_id, user_id, amount, paid_at, notes) VALUES ?`,
+        [installmentRows],
+      );
+    }
+
+    await connection.commit();
+
+    const [createdRows] = await db.query(
+      `SELECT d.*, w.name AS wallet_name
+       FROM debts d
+       LEFT JOIN wallets w ON w.id = d.wallet_id
+       WHERE d.id = ? AND d.user_id = 1 LIMIT 1`,
+      [debtId],
+    );
+
+    res.json({
+      success: true,
+      debt: normalizeDebtRow(createdRows[0]),
+      installmentsCreated: installmentRows.length,
+    });
+  } catch (err) {
+    await connection.rollback();
+    console.error(err);
+    res.status(500).json({ error: "Database error" });
+  } finally {
+    connection.release();
+  }
+});
+
+app.delete("/api/debts/:id", async (req, res) => {
+  const connection = await db.getConnection();
+  try {
+    const debtId = Number(req.params.id);
+    if (!debtId) {
+      return res.status(400).json({ error: "ID hutang tidak valid" });
+    }
+
+    await connection.beginTransaction();
+
+    const [debtRows] = await connection.query(
+      `SELECT id FROM debts WHERE id = ? AND user_id = 1 LIMIT 1`,
+      [debtId],
+    );
+
+    if (debtRows.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({ error: "Hutang tidak ditemukan" });
+    }
+
+    await connection.query(`DELETE FROM debts WHERE id = ? AND user_id = 1`, [
+      debtId,
+    ]);
+    await connection.commit();
+
+    res.json({ success: true });
+  } catch (err) {
+    await connection.rollback();
+    console.error(err);
+    res.status(500).json({ error: "Database error" });
+  } finally {
+    connection.release();
   }
 });
 

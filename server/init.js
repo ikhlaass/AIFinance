@@ -88,24 +88,104 @@ async function initDB() {
     `);
     console.log("Assets table is ready.");
 
-    // 8. Ensure transactions has asset_id column for investment link
+    // 8. Create Debts Table
     await connection.query(`
-      ALTER TABLE transactions
-      ADD COLUMN IF NOT EXISTS asset_id INT NULL,
-      ADD INDEX IF NOT EXISTS idx_transactions_asset_id (asset_id),
-      ADD CONSTRAINT IF NOT EXISTS fk_transactions_asset
-        FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE SET NULL
+      CREATE TABLE IF NOT EXISTS debts (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        name VARCHAR(120) NOT NULL,
+        type ENUM('mortgage', 'vehicle', 'credit-card', 'business', 'other') NOT NULL DEFAULT 'other',
+        principal DECIMAL(15,2) NOT NULL DEFAULT 0,
+        annual_interest_rate DECIMAL(5,2) NOT NULL DEFAULT 0,
+        tenor_months INT NOT NULL DEFAULT 0,
+        monthly_payment DECIMAL(15,2) NOT NULL DEFAULT 0,
+        paid_amount DECIMAL(15,2) NOT NULL DEFAULT 0,
+        remaining_amount DECIMAL(15,2) NOT NULL DEFAULT 0,
+        elapsed_months INT NOT NULL DEFAULT 0,
+        status ENUM('active', 'paid') NOT NULL DEFAULT 'active',
+        start_date DATE NOT NULL,
+        wallet_id INT NULL,
+        notes TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (wallet_id) REFERENCES wallets(id) ON DELETE SET NULL
+      )
     `);
+    console.log("Debts table is ready.");
+
+    // 9. Create Debt Installments Table
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS debt_installments (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        debt_id INT NOT NULL,
+        user_id INT NOT NULL,
+        amount DECIMAL(15,2) NOT NULL DEFAULT 0,
+        paid_at DATE NOT NULL,
+        notes VARCHAR(255),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (debt_id) REFERENCES debts(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        INDEX idx_debt_installments_debt_id (debt_id),
+        INDEX idx_debt_installments_user_id (user_id)
+      )
+    `);
+    console.log("Debt installments table is ready.");
+
+    // 10. Ensure transactions has asset_id column for investment link
+    const [assetColumnRows] = await connection.query(
+      `SELECT COUNT(*) AS count
+       FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = ?
+         AND TABLE_NAME = 'transactions'
+         AND COLUMN_NAME = 'asset_id'`,
+      [process.env.DB_NAME],
+    );
+    if (Number(assetColumnRows[0]?.count) === 0) {
+      await connection.query(
+        `ALTER TABLE transactions ADD COLUMN asset_id INT NULL`,
+      );
+    }
+
+    const [assetIndexRows] = await connection.query(
+      `SELECT COUNT(*) AS count
+       FROM information_schema.STATISTICS
+       WHERE TABLE_SCHEMA = ?
+         AND TABLE_NAME = 'transactions'
+         AND INDEX_NAME = 'idx_transactions_asset_id'`,
+      [process.env.DB_NAME],
+    );
+    if (Number(assetIndexRows[0]?.count) === 0) {
+      await connection.query(
+        `ALTER TABLE transactions ADD INDEX idx_transactions_asset_id (asset_id)`,
+      );
+    }
+
+    const [assetFkRows] = await connection.query(
+      `SELECT COUNT(*) AS count
+       FROM information_schema.REFERENTIAL_CONSTRAINTS
+       WHERE CONSTRAINT_SCHEMA = ?
+         AND TABLE_NAME = 'transactions'
+         AND CONSTRAINT_NAME = 'fk_transactions_asset'`,
+      [process.env.DB_NAME],
+    );
+    if (Number(assetFkRows[0]?.count) === 0) {
+      await connection.query(
+        `ALTER TABLE transactions
+         ADD CONSTRAINT fk_transactions_asset
+         FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE SET NULL`,
+      );
+    }
     console.log("Transactions schema sync for asset_id is ready.");
 
-    // 9. Insert Main User
+    // 11. Insert Main User
     await connection.query(`
       INSERT INTO users (id, name, email) 
       VALUES (1, 'Idrus', 'andi.ikhlas107@gmail.com')
       ON DUPLICATE KEY UPDATE name=name;
     `);
 
-    // 10. Optional dummy seed (disabled by default)
+    // 12. Optional dummy seed (disabled by default)
     if (process.env.SEED_DEMO === "true") {
       const wallets = [
         "Cash/Tunai",

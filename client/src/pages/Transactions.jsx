@@ -6,7 +6,6 @@ import {
   Trash2,
   Calendar,
   CreditCard,
-  Tag,
   ArrowUpRight,
   ArrowDownRight,
   MoreVertical,
@@ -245,13 +244,12 @@ const Transactions = () => {
 
   return (
     <div
-      className="space-y-8 pb-20 animate-in fade-in duration-700 font-sans"
+      className="space-y-7 pb-20 animate-in fade-in duration-700 font-sans"
       ref={dropdownRef}
     >
-      {/* SEARCH & FILTERS - Autofint Style */}
-      <section className="bg-card border border-card-border rounded-xl shadow-sm overflow-visible">
-        <div className="flex items-center px-4 py-3 border-b border-card-border/60">
-          <Search size={18} className="text-text-muted mr-3 shrink-0" />
+      <section className="rounded-[1.5rem] border border-card-border bg-card shadow-sm overflow-visible">
+        <div className="flex items-center gap-3 px-4 py-3 border-b border-card-border/60">
+          <Search size={18} className="text-text-muted shrink-0" />
           <input
             type="text"
             placeholder="Cari transaksi..."
@@ -261,142 +259,144 @@ const Transactions = () => {
           />
         </div>
 
-        <div className="flex flex-wrap items-center gap-3 px-4 py-3 relative">
-          <div className="relative">
-            <FilterButton id="type" icon={Filter} label={selectedTypeLabel} />
-            {activeDropdown === "type" && (
-              <div className="absolute top-full left-0 mt-2 w-48 bg-card border border-card-border shadow-xl rounded-xl z-40 py-2 overflow-hidden animate-in zoom-in-95">
-                {["", "income", "expense"].map((t, i) => (
-                  <button
-                    key={i}
-                    onClick={() => {
-                      setFilterType(t);
-                      setActiveDropdown(null);
-                    }}
-                    className="w-full text-left px-4 py-2 text-sm text-text-main hover:bg-body/50"
-                  >
-                    {t === ""
-                      ? "Semua Tipe"
-                      : t === "income"
-                        ? "Pemasukan"
-                        : "Pengeluaran"}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div className="relative">
-            <FilterButton
-              id="wallet"
-              icon={CreditCard}
-              label={selectedWalletName}
-            />
-            {activeDropdown === "wallet" && (
-              <div className="absolute top-full left-0 mt-2 w-56 bg-card border border-card-border shadow-xl rounded-xl z-40 py-2 overflow-hidden animate-in zoom-in-95">
-                <button
-                  onClick={() => {
-                    setFilterWallet("");
-                    setActiveDropdown(null);
-                  }}
-                  className="w-full text-left px-4 py-2 text-sm text-text-main hover:bg-body/50"
-                >
-                  Semua Dompet
-                </button>
-                {wallets.map((w) => (
-                  <button
-                    key={w.id}
-                    onClick={() => {
-                      setFilterWallet(w.id);
-                      setActiveDropdown(null);
-                    }}
-                    className="w-full text-left px-4 py-2 text-sm text-text-main hover:bg-body/50"
-                  >
-                    {w.name}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div className="relative">
-            <FilterButton id="date" icon={Calendar} label={dateFilter} />
-            {activeDropdown === "date" && (
-              <div className="absolute top-full left-0 mt-2 w-52 bg-card border border-card-border shadow-xl rounded-xl z-40 py-2 overflow-hidden animate-in zoom-in-95">
-                {[
-                  "Semua Waktu",
-                  "Hari Ini",
-                  "Minggu Ini",
-                  "Bulan Ini",
-                  "Custom",
-                ].map((d, i) => (
-                  <div key={i}>
+        <div className="px-4 py-3">
+          <div className="flex flex-wrap items-center gap-3 relative">
+            <div className="relative">
+              <FilterButton id="type" icon={Filter} label={selectedTypeLabel} />
+              {activeDropdown === "type" && (
+                <div className="absolute top-full left-0 mt-2 w-48 bg-card border border-card-border shadow-xl rounded-xl z-40 py-2 overflow-hidden animate-in zoom-in-95">
+                  {["", "income", "expense"].map((t, i) => (
                     <button
+                      key={i}
                       onClick={() => {
-                        setDateFilter(d);
-                        if (d !== "Custom") setActiveDropdown(null);
+                        setFilterType(t);
+                        setActiveDropdown(null);
                       }}
-                      className={cn(
-                        "w-full text-left px-4 py-2 text-sm text-text-main hover:bg-body/50 flex items-center justify-between",
-                        dateFilter === d &&
-                          "text-blue-500 font-bold bg-blue-500/5",
-                      )}
+                      className="w-full text-left px-4 py-2 text-sm text-text-main hover:bg-body/50"
                     >
-                      {d}
-                      {dateFilter === d && <span className="text-xs">✓</span>}
+                      {t === ""
+                        ? "Semua Tipe"
+                        : t === "income"
+                          ? "Pemasukan"
+                          : "Pengeluaran"}
                     </button>
+                  ))}
+                </div>
+              )}
+            </div>
 
-                    {d === "Custom" && dateFilter === "Custom" && (
-                      <div className="px-4 py-3 space-y-2 bg-body/30 border-t border-card-border/50">
-                        <input
-                          type="date"
-                          value={customStart}
-                          onChange={(e) => setCustomStart(e.target.value)}
-                          className="w-full bg-body border border-card-border text-xs rounded px-2 py-1 outline-none text-text-main"
-                        />
-                        <input
-                          type="date"
-                          value={customEnd}
-                          onChange={(e) => setCustomEnd(e.target.value)}
-                          className="w-full bg-body border border-card-border text-xs rounded px-2 py-1 outline-none text-text-main"
-                        />
-                        <button
-                          onClick={() => setActiveDropdown(null)}
-                          className="w-full bg-blue-500 text-white text-xs py-1 rounded font-bold"
-                        >
-                          Terapkan
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
+            <div className="relative">
+              <FilterButton
+                id="wallet"
+                icon={CreditCard}
+                label={selectedWalletName}
+              />
+              {activeDropdown === "wallet" && (
+                <div className="absolute top-full left-0 mt-2 w-56 bg-card border border-card-border shadow-xl rounded-xl z-40 py-2 overflow-hidden animate-in zoom-in-95">
+                  <button
+                    onClick={() => {
+                      setFilterWallet("");
+                      setActiveDropdown(null);
+                    }}
+                    className="w-full text-left px-4 py-2 text-sm text-text-main hover:bg-body/50"
+                  >
+                    Semua Dompet
+                  </button>
+                  {wallets.map((w) => (
+                    <button
+                      key={w.id}
+                      onClick={() => {
+                        setFilterWallet(w.id);
+                        setActiveDropdown(null);
+                      }}
+                      className="w-full text-left px-4 py-2 text-sm text-text-main hover:bg-body/50"
+                    >
+                      {w.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="relative">
+              <FilterButton id="date" icon={Calendar} label={dateFilter} />
+              {activeDropdown === "date" && (
+                <div className="absolute top-full left-0 mt-2 w-52 bg-card border border-card-border shadow-xl rounded-xl z-40 py-2 overflow-hidden animate-in zoom-in-95">
+                  {[
+                    "Semua Waktu",
+                    "Hari Ini",
+                    "Minggu Ini",
+                    "Bulan Ini",
+                    "Custom",
+                  ].map((d, i) => (
+                    <div key={i}>
+                      <button
+                        onClick={() => {
+                          setDateFilter(d);
+                          if (d !== "Custom") setActiveDropdown(null);
+                        }}
+                        className={cn(
+                          "w-full text-left px-4 py-2 text-sm text-text-main hover:bg-body/50 flex items-center justify-between",
+                          dateFilter === d &&
+                            "text-blue-500 font-bold bg-blue-500/5",
+                        )}
+                      >
+                        {d}
+                        {dateFilter === d && <span className="text-xs">✓</span>}
+                      </button>
+
+                      {d === "Custom" && dateFilter === "Custom" && (
+                        <div className="px-4 py-3 space-y-2 bg-body/30 border-t border-card-border/50">
+                          <input
+                            type="date"
+                            value={customStart}
+                            onChange={(e) => setCustomStart(e.target.value)}
+                            className="w-full bg-body border border-card-border text-xs rounded px-2 py-1 outline-none text-text-main"
+                          />
+                          <input
+                            type="date"
+                            value={customEnd}
+                            onChange={(e) => setCustomEnd(e.target.value)}
+                            className="w-full bg-body border border-card-border text-xs rounded px-2 py-1 outline-none text-text-main"
+                          />
+                          <button
+                            onClick={() => setActiveDropdown(null)}
+                            className="w-full bg-blue-500 text-white text-xs py-1 rounded font-bold"
+                          >
+                            Terapkan
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
+
+          {activeChips.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {activeChips.map((chip, idx) => (
+                <span
+                  key={idx}
+                  className="text-[10px] font-bold tracking-wide uppercase px-2.5 py-1 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20"
+                >
+                  {chip}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
-
-        {activeChips.length > 0 && (
-          <div className="px-4 pb-4 flex flex-wrap gap-2">
-            {activeChips.map((chip, idx) => (
-              <span
-                key={idx}
-                className="text-[10px] font-bold tracking-wide uppercase px-2.5 py-1 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20"
-              >
-                {chip}
-              </span>
-            ))}
-          </div>
-        )}
       </section>
 
       {/* DATE-GROUPED TRANSACTIONS */}
       <section className="space-y-6">
         {isLoading ? (
-          <div className="text-center py-6 text-sm text-text-muted">
+          <div className="text-center py-10 text-sm text-text-muted rounded-xl border border-dashed border-card-border bg-card/60">
             Memuat...
           </div>
         ) : Object.keys(groupedData).length === 0 ? (
-          <div className="text-center py-10 text-text-muted text-sm border-2 border-dashed border-card-border rounded-xl">
+          <div className="text-center py-12 text-text-muted text-sm border-2 border-dashed border-card-border rounded-xl bg-card/50">
             Tidak ada transaksi ditemukan.
           </div>
         ) : (
@@ -426,14 +426,14 @@ const Transactions = () => {
               </div>
 
               {/* Transactions Container (No heavy border) */}
-              <div className="bg-card border border-card-border/60 rounded-xl overflow-visible divide-y divide-card-border/50 shadow-sm">
+              <div className="bg-card border border-card-border/60 rounded-[1.35rem] overflow-visible divide-y divide-card-border/50 shadow-sm">
                 {group.items.map((t) => (
                   <div
                     key={t.id}
-                    className="flex items-center justify-between p-3 sm:px-5 min-h-[72px] hover:bg-body/20 transition-colors"
+                    className="flex items-start justify-between gap-4 p-4 sm:px-5 min-h-[76px] hover:bg-body/20 transition-colors"
                   >
                     {/* Left: Round Icon & Labels */}
-                    <div className="flex items-center gap-4">
+                    <div className="flex items-start gap-4 min-w-0 flex-1">
                       <div
                         className={cn(
                           "w-10 h-10 rounded-full flex items-center justify-center shrink-0 border",
@@ -449,11 +449,11 @@ const Transactions = () => {
                         )}
                       </div>
 
-                      <div className="flex flex-col">
+                      <div className="flex flex-col min-w-0">
                         <span className="text-[14px] font-bold text-text-main line-clamp-1">
                           {t.description || "Tanpa deskripsi"}
                         </span>
-                        <span className="text-[11px] font-medium text-text-muted mt-0.5">
+                        <span className="text-[11px] font-medium text-text-muted mt-0.5 line-clamp-1">
                           {t.category || "Umum"} &bull;{" "}
                           {t.wallet_name || "Cash"}
                         </span>
@@ -461,7 +461,7 @@ const Transactions = () => {
                     </div>
 
                     {/* Right: Amount & Dots */}
-                    <div className="flex items-center gap-1 sm:gap-3 shrink-0">
+                    <div className="flex items-center gap-1 sm:gap-3 shrink-0 self-center">
                       <span
                         className={cn(
                           "text-[14px] font-black whitespace-nowrap min-w-[110px] text-right",

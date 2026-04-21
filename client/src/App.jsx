@@ -5,6 +5,7 @@ import Dashboard from "./pages/Dashboard";
 import Transactions from "./pages/Transactions";
 import Assets from "./pages/Assets";
 import Debts from "./pages/Debts";
+import Reports from "./pages/Reports";
 
 function App() {
   const [theme, setTheme] = useState(localStorage.getItem("theme") || "dark");
@@ -39,6 +40,7 @@ function App() {
             />
             <Route path="/assets" element={<Assets theme={theme} />} />
             <Route path="/debts" element={<Debts theme={theme} />} />
+            <Route path="/reports" element={<Reports theme={theme} />} />
           </Routes>
         </Layout>
       </div>

@@ -3,9 +3,8 @@ import TrendChart from "../components/TrendChart";
 import CategoryChart from "../components/CategoryChart";
 import TransactionItem from "../components/TransactionItem";
 import WalletGrid from "../components/WalletGrid";
-import StatCard from "../components/StatCard";
 import AIInsightWidget from "../components/AIInsightWidget";
-import { Bell, Search, Plus, ChevronRight, CreditCard } from "lucide-react";
+import { TrendingUp, TrendingDown, PiggyBank, Wallet } from "lucide-react";
 
 const Dashboard = () => {
   const [summary, setSummary] = useState({
@@ -74,56 +73,94 @@ const Dashboard = () => {
     };
   }, []);
 
+  const cashflowCards = [
+    {
+      key: "income",
+      title: "Pemasukan",
+      value: formatRp(summary.income),
+      Icon: TrendingUp,
+      tone: "bg-emerald-500/10 text-emerald-500",
+    },
+    {
+      key: "expense",
+      title: "Pengeluaran",
+      value: formatRp(summary.expense),
+      Icon: TrendingDown,
+      tone: "bg-rose-500/10 text-rose-500",
+    },
+    {
+      key: "investment",
+      title: "Investasi",
+      value: formatRp(summary.total_assets_val || 0),
+      Icon: PiggyBank,
+      tone: "bg-blue-500/10 text-blue-500",
+    },
+    {
+      key: "net-cash-flow",
+      title: "Net Cash Flow",
+      value: formatRp(summary.net_cash_flow),
+      Icon: Wallet,
+      tone:
+        summary.net_cash_flow >= 0
+          ? "bg-emerald-500/10 text-emerald-500"
+          : "bg-rose-500/10 text-rose-500",
+      footer: summary.net_cash_flow >= 0 ? "Surplus" : "Defisit",
+      footerTone:
+        summary.net_cash_flow >= 0 ? "text-emerald-500" : "text-rose-500",
+    },
+  ];
+
   return (
-    <div className="space-y-12 pb-20 animate-in fade-in duration-700">
-      {/* 0. AI INSIGHT WIDGET */}
+    <div className="mx-auto max-w-[1600px] space-y-10 pb-20 animate-in fade-in duration-700">
       <AIInsightWidget />
 
-      {/* 1. RINGKASAN CASH FLOW */}
-      <section>
-        <h2 className="text-sm font-bold text-text-main mb-6 uppercase tracking-widest flex items-center gap-4">
+      <section className="space-y-5">
+        <h2 className="text-sm font-bold text-text-main uppercase tracking-widest flex items-center gap-4">
           Ringkasan Cash Flow -{" "}
           {new Date().toLocaleDateString("id-ID", {
             month: "long",
             year: "numeric",
           })}
         </h2>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6">
-          <StatCard
-            title="Pemasukan"
-            value={formatRp(summary.income)}
-            type="up"
-            color="emerald"
-          />
-          <StatCard
-            title="Pengeluaran"
-            value={formatRp(summary.expense)}
-            type="down"
-            color="rose"
-          />
-          <StatCard
-            title="Investasi"
-            value={formatRp(summary.total_assets_val || 0)}
-            type="chart"
-            color="blue"
-          />
-          <StatCard
-            title="Net Cash Flow"
-            value={formatRp(summary.net_cash_flow)}
-            type="wallet"
-            color={summary.net_cash_flow >= 0 ? "emerald" : "rose"}
-            trend={summary.net_cash_flow >= 0 ? "Surplus" : "Defisit"}
-          />
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-5">
+          {cashflowCards.map((card) => (
+            <article
+              key={card.key}
+              className="rounded-2xl border border-card-border bg-card/95 px-4 py-4 md:px-5 md:py-4 shadow-[0_8px_22px_rgba(15,23,42,0.08)] hover:shadow-[0_12px_28px_rgba(15,23,42,0.10)] transition-all"
+            >
+              <div className="flex flex-col items-center text-center gap-2.5">
+                <div
+                  className={`h-10 w-10 shrink-0 rounded-xl flex items-center justify-center ${card.tone}`}
+                >
+                  <card.Icon size={17} />
+                </div>
+                <div className="min-w-0 w-full">
+                  <p className="text-[10px] font-black uppercase tracking-[0.14em] text-text-muted">
+                    {card.title}
+                  </p>
+                  <p className="mt-1 text-[1.04rem] md:text-[1.14rem] font-black leading-none tracking-tight text-text-main whitespace-nowrap tabular-nums overflow-hidden text-ellipsis">
+                    {card.value}
+                  </p>
+                  {card.footer ? (
+                    <p
+                      className={`mt-1.5 text-[10px] font-bold uppercase tracking-wide ${card.footerTone || "text-text-muted"}`}
+                    >
+                      {card.footer}
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+            </article>
+          ))}
         </div>
       </section>
 
-      {/* 2. SALDO DOMPET */}
       <section className="space-y-6">
         <h2 className="text-sm font-bold text-text-main mb-4 uppercase tracking-widest">
           Saldo Dompet
         </h2>
-        <div className="bg-card card-gradient rounded-[1.5rem] md:rounded-[2.5rem] p-6 md:p-10 border border-card-border shadow-2xl relative overflow-hidden group transition-all">
-          <div className="absolute top-0 right-0 w-64 h-64 bg-primary/5 rounded-full blur-3xl -mr-20 -mt-20 group-hover:bg-primary/10 transition-all duration-1000"></div>
+        <div className="bg-card card-gradient rounded-[1.75rem] md:rounded-[2rem] p-6 md:p-8 border border-card-border shadow-[0_10px_28px_rgba(15,23,42,0.08)] hover:shadow-[0_14px_36px_rgba(15,23,42,0.10)] relative overflow-hidden group transition-all">
+          <div className="absolute top-0 right-0 w-64 h-64 bg-primary/5 rounded-full blur-3xl -mr-20 -mt-20 group-hover:bg-primary/10 transition-all duration-1000" />
 
           <div className="relative z-10 space-y-2">
             <p className="text-[10px] font-black text-primary uppercase tracking-[0.2em]">
@@ -138,13 +175,12 @@ const Dashboard = () => {
         <WalletGrid />
       </section>
 
-      {/* 3. KEKAYAAN BERSIH */}
       <section className="space-y-6">
         <h2 className="text-sm font-bold text-text-main mb-4 uppercase tracking-widest">
           Kekayaan Bersih
         </h2>
-        <div className="bg-card card-gradient rounded-[1.5rem] md:rounded-[2.5rem] p-8 md:p-12 border border-card-border shadow-2xl text-center group relative overflow-hidden transition-all">
-          <div className="absolute inset-0 bg-emerald-500/5 opacity-0 group-hover:opacity-100 transition-opacity"></div>
+        <div className="bg-card card-gradient rounded-[1.75rem] md:rounded-[2rem] p-8 md:p-10 border border-card-border shadow-[0_10px_28px_rgba(15,23,42,0.08)] hover:shadow-[0_14px_36px_rgba(15,23,42,0.10)] text-center group relative overflow-hidden transition-all">
+          <div className="absolute inset-0 bg-emerald-500/5 opacity-0 group-hover:opacity-100 transition-opacity" />
           <h2 className="text-4xl md:text-7xl font-black text-emerald-500 tracking-tighter group-hover:scale-105 transition-transform duration-500 relative z-10 transition-all">
             {formatRp(summary.net_worth)}
           </h2>
@@ -154,7 +190,7 @@ const Dashboard = () => {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="bg-card border border-card-border rounded-[1.5rem] p-6 shadow-xl">
+          <div className="bg-card border border-card-border rounded-[1.5rem] p-6 shadow-[0_10px_28px_rgba(15,23,42,0.08)]">
             <p className="text-[10px] font-black uppercase tracking-[0.2em] text-primary mb-2">
               Aset Pasar
             </p>
@@ -166,7 +202,7 @@ const Dashboard = () => {
               {marketShare.toFixed(1)}% dari aset terpantau
             </p>
           </div>
-          <div className="bg-card border border-card-border rounded-[1.5rem] p-6 shadow-xl">
+          <div className="bg-card border border-card-border rounded-[1.5rem] p-6 shadow-[0_10px_28px_rgba(15,23,42,0.08)]">
             <p className="text-[10px] font-black uppercase tracking-[0.2em] text-text-muted mb-2">
               Aset Kontrak / Statis
             </p>
@@ -181,17 +217,15 @@ const Dashboard = () => {
         </div>
       </section>
 
-      {/* 4. TREN PENGELUARAN */}
-      <section className="bg-card card-gradient rounded-[1.5rem] md:rounded-[2rem] p-6 md:p-8 border border-card-border shadow-2xl transition-all">
+      <section className="bg-card card-gradient rounded-[1.75rem] md:rounded-[2rem] p-6 md:p-8 border border-card-border shadow-[0_10px_28px_rgba(15,23,42,0.08)] hover:shadow-[0_14px_36px_rgba(15,23,42,0.10)] transition-all">
         <h3 className="text-sm font-bold text-text-main mb-6 uppercase tracking-widest">
           Tren Pengeluaran (30 Hari Terakhir)
         </h3>
         <TrendChart />
       </section>
 
-      {/* 5. PEMASUKAN & PENGELUARAN PER KATEGORI */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <section className="bg-card card-gradient rounded-[1.5rem] md:rounded-[2.5rem] p-6 md:p-8 border border-card-border shadow-xl transition-all hover:border-rose-500/20">
+        <section className="bg-card card-gradient rounded-[1.75rem] md:rounded-[2rem] p-6 md:p-8 border border-card-border shadow-[0_10px_28px_rgba(15,23,42,0.08)] hover:shadow-[0_14px_36px_rgba(15,23,42,0.10)] transition-all hover:border-rose-500/20">
           <h3 className="text-sm font-bold text-text-main mb-8 uppercase tracking-widest">
             Pengeluaran per Kategori
           </h3>
@@ -206,7 +240,7 @@ const Dashboard = () => {
           </div>
         </section>
 
-        <section className="bg-card card-gradient rounded-[1.5rem] md:rounded-[2.5rem] p-6 md:p-8 border border-card-border shadow-xl transition-all hover:border-emerald-500/20">
+        <section className="bg-card card-gradient rounded-[1.75rem] md:rounded-[2rem] p-6 md:p-8 border border-card-border shadow-[0_10px_28px_rgba(15,23,42,0.08)] hover:shadow-[0_14px_36px_rgba(15,23,42,0.10)] transition-all hover:border-emerald-500/20">
           <h3 className="text-sm font-bold text-text-main mb-8 uppercase tracking-widest">
             Pemasukan per Kategori
           </h3>
@@ -222,8 +256,7 @@ const Dashboard = () => {
         </section>
       </div>
 
-      {/* 6. TRANSAKSI TERBARU */}
-      <section className="bg-card card-gradient rounded-[1.5rem] md:rounded-[2.5rem] p-6 md:p-8 border border-card-border shadow-2xl transition-all">
+      <section className="bg-card card-gradient rounded-[1.75rem] md:rounded-[2rem] p-6 md:p-8 border border-card-border shadow-[0_10px_28px_rgba(15,23,42,0.08)] hover:shadow-[0_14px_36px_rgba(15,23,42,0.10)] transition-all">
         <div className="flex justify-between items-center mb-8">
           <h3 className="text-sm font-bold text-text-main uppercase tracking-widest">
             Transaksi Terbaru

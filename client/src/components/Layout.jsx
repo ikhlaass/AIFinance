@@ -56,6 +56,9 @@ const Layout = ({ children, theme, toggleTheme }) => {
   } else if (location.pathname === "/debts") {
     title = "Hutang & Kewajiban";
     subtitle = "Kelola cicilan, pinjaman, dan tagihan";
+  } else if (location.pathname === "/reports") {
+    title = "Laporan Keuangan";
+    subtitle = "Analisis keuangan lengkap dalam satu halaman";
   }
 
   return (
@@ -75,71 +78,77 @@ const Layout = ({ children, theme, toggleTheme }) => {
         />
       )}
 
-      <main className="flex-1 lg:ml-64 p-4 md:p-8 lg:p-12 max-w-[1400px] transition-all">
-        {/* Header */}
-        <header className="flex justify-between items-center mb-8 md:mb-16 gap-4 md:gap-10">
-          <div className="flex items-center gap-4 lg:hidden">
-            <button
-              onClick={() => setIsSidebarOpen(true)}
-              className="p-3 bg-card border border-card-border rounded-2xl text-text-muted hover:text-text-main transition-all"
-            >
-              <Menu size={20} />
-            </button>
-            <BrandMark compact />
-          </div>
-
-          <div className="flex-1 hidden md:block max-w-xl">
-            <h1 className="text-3xl font-black text-text-main tracking-tight mb-1">
-              {title}
-            </h1>
-            <p className="text-sm text-text-muted font-medium tracking-wide">
-              {subtitle}
-            </p>
-          </div>
-
-          <div className="flex items-center gap-3 md:gap-4">
-            {location.pathname === "/transactions" && (
+      <main className="flex-1 lg:ml-64 w-full p-4 md:p-8 lg:p-12 transition-all">
+        <div className="mx-auto w-full max-w-[1400px]">
+          {/* Header */}
+          <header className="flex justify-between items-center mb-8 md:mb-16 gap-4 md:gap-10">
+            <div className="flex items-center gap-4 lg:hidden">
               <button
-                onClick={() =>
-                  document.dispatchEvent(new CustomEvent("export-csv"))
-                }
-                className="flex items-center gap-2 px-3 md:px-4 py-2.5 md:py-3.5 bg-card border border-card-border rounded-xl md:rounded-2xl text-xs md:text-sm font-bold text-text-main hover:bg-body transition-all shadow-sm"
+                onClick={() => setIsSidebarOpen(true)}
+                className="p-3 bg-card border border-card-border rounded-2xl text-text-muted hover:text-text-main transition-all"
               >
-                <Download size={18} className="text-blue-500" />
-                <span className="hidden sm:inline">Export CSV</span>
+                <Menu size={20} />
               </button>
-            )}
+              <BrandMark compact />
+            </div>
 
-            {(location.pathname === "/assets" ||
-              location.pathname === "/transactions" ||
-              location.pathname === "/debts") && (
-              <button
-                onClick={() => {
-                  if (location.pathname === "/assets") {
-                    document.dispatchEvent(new CustomEvent("open-asset-modal"));
-                  } else if (location.pathname === "/debts") {
-                    document.dispatchEvent(new CustomEvent("open-debt-modal"));
-                  } else {
-                    setIsModalOpen(true);
+            <div className="flex-1 hidden md:block max-w-xl">
+              <h1 className="text-3xl font-black text-text-main tracking-tight mb-1">
+                {title}
+              </h1>
+              <p className="text-sm text-text-muted font-medium tracking-wide">
+                {subtitle}
+              </p>
+            </div>
+
+            <div className="flex items-center gap-3 md:gap-4">
+              {location.pathname === "/transactions" && (
+                <button
+                  onClick={() =>
+                    document.dispatchEvent(new CustomEvent("export-csv"))
                   }
-                }}
-                className="bg-blue-600 hover:bg-blue-500 text-white px-4 md:px-8 py-2.5 md:py-3.5 rounded-xl md:rounded-2xl text-xs md:text-sm font-black flex items-center gap-2 md:gap-3 transition-all shadow-xl shadow-blue-600/20 active:scale-95 shadow-sm"
-              >
-                <Plus size={18} />
-                <span className="hidden sm:inline">
-                  {location.pathname === "/assets"
-                    ? "Tambah Aset"
-                    : location.pathname === "/debts"
-                      ? "Tambah Hutang"
-                      : "Tambah Transaksi"}
-                </span>
-                <span className="sm:hidden">Tambah</span>
-              </button>
-            )}
-          </div>
-        </header>
+                  className="flex items-center gap-2 px-3 md:px-4 py-2.5 md:py-3.5 bg-card border border-card-border rounded-xl md:rounded-2xl text-xs md:text-sm font-bold text-text-main hover:bg-body transition-all shadow-sm"
+                >
+                  <Download size={18} className="text-blue-500" />
+                  <span className="hidden sm:inline">Export CSV</span>
+                </button>
+              )}
 
-        {children}
+              {(location.pathname === "/assets" ||
+                location.pathname === "/transactions" ||
+                location.pathname === "/debts") && (
+                <button
+                  onClick={() => {
+                    if (location.pathname === "/assets") {
+                      document.dispatchEvent(
+                        new CustomEvent("open-asset-modal"),
+                      );
+                    } else if (location.pathname === "/debts") {
+                      document.dispatchEvent(
+                        new CustomEvent("open-debt-modal"),
+                      );
+                    } else {
+                      setIsModalOpen(true);
+                    }
+                  }}
+                  className="bg-blue-600 hover:bg-blue-500 text-white px-4 md:px-8 py-2.5 md:py-3.5 rounded-xl md:rounded-2xl text-xs md:text-sm font-black flex items-center gap-2 md:gap-3 transition-all shadow-xl shadow-blue-600/20 active:scale-95 shadow-sm"
+                >
+                  <Plus size={18} />
+                  <span className="hidden sm:inline">
+                    {location.pathname === "/assets"
+                      ? "Tambah Aset"
+                      : location.pathname === "/debts"
+                        ? "Tambah Hutang"
+                        : "Tambah Transaksi"}
+                  </span>
+                  <span className="sm:hidden">Tambah</span>
+                </button>
+              )}
+            </div>
+          </header>
+
+          {children}
+        </div>
       </main>
 
       <TransactionModal

@@ -29,7 +29,7 @@ const menuItems = [
   { icon: ReceiptText, label: "Transaksi", path: "/transactions" },
   { icon: Briefcase, label: "Aset Tracker", path: "/assets" },
   { icon: HandCoins, label: "Hutang", path: "/debts" },
-  { icon: PieChart, label: "Laporan", disabled: true },
+  { icon: PieChart, label: "Laporan", path: "/reports" },
   { icon: Users, label: "Affiliate", disabled: true },
   { icon: HelpCircle, label: "Bantuan", disabled: true },
   { icon: Settings, label: "Pengaturan", disabled: true },
@@ -49,9 +49,26 @@ const Sidebar = ({ theme, toggleTheme, isOpen, onClose }) => {
       <div className="p-7 pb-6 flex items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
           <div className="relative shrink-0 w-12 h-12 rounded-[1.1rem] bg-gradient-to-br from-blue-500 via-sky-500 to-cyan-400 p-[1px] shadow-[0_10px_30px_rgba(14,165,233,0.35)]">
-            <div className="relative w-full h-full rounded-[1.05rem] bg-[#08111f] flex items-center justify-center overflow-hidden">
-              <div className="absolute -right-1 -top-1 w-5 h-5 rounded-full bg-white/10 blur-sm"></div>
-              <span className="relative text-white font-black text-[15px] tracking-[-0.08em] leading-none">
+            <div
+              className={cn(
+                "relative w-full h-full rounded-[1.05rem] flex items-center justify-center overflow-hidden transition-colors duration-300 border",
+                isLight
+                  ? "bg-white border-slate-200 text-slate-900"
+                  : "bg-slate-950/70 border-white/10 backdrop-blur-md text-white",
+              )}
+            >
+              <div
+                className={cn(
+                  "absolute -right-1 -top-1 w-5 h-5 rounded-full blur-sm",
+                  isLight ? "bg-sky-400/10" : "bg-cyan-300/20",
+                )}
+              ></div>
+              <span
+                className={cn(
+                  "relative font-black text-[15px] tracking-[-0.08em] leading-none",
+                  isLight ? "text-slate-900" : "text-white",
+                )}
+              >
                 AF
               </span>
             </div>

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   BadgeDollarSign,
   CalendarDays,
@@ -29,12 +29,34 @@ const debtTypeOptions = [
   { value: "other", label: "Lainnya" },
 ];
 
+const DebtStatCard = ({ label, value, icon: Icon, tone }) => (
+  <div className="h-full rounded-[1.75rem] border border-card-border bg-card px-5 py-5 md:px-6 md:py-6 shadow-[0_12px_40px_rgba(15,23,42,0.06)]">
+    <div className="flex h-full flex-col gap-4">
+      <div
+        className={`shrink-0 w-11 h-11 rounded-2xl flex items-center justify-center ${tone}`}
+      >
+        <Icon size={20} />
+      </div>
+      <div className="flex-1">
+        <p className="text-[10px] md:text-[11px] uppercase tracking-[0.22em] text-text-muted font-black">
+          {label}
+        </p>
+        <h3 className="mt-2 text-[1.45rem] sm:text-[1.6rem] md:text-[1.8rem] font-black text-text-main tracking-[-0.04em] leading-tight break-words max-w-full">
+          {value}
+        </h3>
+      </div>
+    </div>
+  </div>
+);
+
 const Debts = () => {
   const [activeTab, setActiveTab] = useState("active");
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [debts, setDebts] = useState([]);
   const [installments, setInstallments] = useState([]);
   const [wallets, setWallets] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const today = new Date().toISOString().split("T")[0];
 
@@ -51,24 +73,37 @@ const Debts = () => {
     elapsedMonths: "",
   });
 
-  useEffect(() => {
-    fetch("/api/wallets")
-      .then((r) => r.json())
-      .then((data) => {
-        if (Array.isArray(data)) setWallets(data);
-      })
-      .catch(() => {
-        setWallets([]);
-      });
+  const fetchDebtData = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const [debtsRes, installmentsRes, walletsRes] = await Promise.all([
+        fetch("/api/debts"),
+        fetch("/api/debts/installments"),
+        fetch("/api/wallets"),
+      ]);
+
+      const debtsData = debtsRes.ok ? await debtsRes.json() : [];
+      const installmentsData = installmentsRes.ok
+        ? await installmentsRes.json()
+        : [];
+      const walletsData = walletsRes.ok ? await walletsRes.json() : [];
+
+      setDebts(Array.isArray(debtsData) ? debtsData : []);
+      setInstallments(Array.isArray(installmentsData) ? installmentsData : []);
+      setWallets(Array.isArray(walletsData) ? walletsData : []);
+    } catch (error) {
+      console.error("Failed to load debt data:", error);
+      setDebts([]);
+      setInstallments([]);
+      setWallets([]);
+    } finally {
+      setIsLoading(false);
+    }
   }, []);
 
   useEffect(() => {
-    const openModalFromHeader = () => setIsModalOpen(true);
-    document.addEventListener("open-debt-modal", openModalFromHeader);
-    return () => {
-      document.removeEventListener("open-debt-modal", openModalFromHeader);
-    };
-  }, []);
+    fetchDebtData();
+  }, [fetchDebtData]);
 
   const stats = useMemo(() => {
     const totalPrincipal = debts
@@ -126,9 +161,7 @@ const Debts = () => {
     return debts.filter((d) => d.status === "paid");
   }, [activeTab, debts]);
 
-  const openAddModal = () => setIsModalOpen(true);
-
-  const resetForm = () => {
+  const resetForm = useCallback(() => {
     setForm({
       isExisting: false,
       name: "",
@@ -141,9 +174,22 @@ const Debts = () => {
       notes: "",
       elapsedMonths: "",
     });
-  };
+  }, [today]);
 
-  const handleAddDebt = (e) => {
+  const openAddModal = useCallback(() => {
+    resetForm();
+    setIsModalOpen(true);
+  }, [resetForm]);
+
+  useEffect(() => {
+    const openModalFromHeader = () => openAddModal();
+    document.addEventListener("open-debt-modal", openModalFromHeader);
+    return () => {
+      document.removeEventListener("open-debt-modal", openModalFromHeader);
+    };
+  }, [openAddModal]);
+
+  const handleAddDebt = async (e) => {
     e.preventDefault();
 
     const name = form.name.trim();
@@ -168,84 +214,55 @@ const Debts = () => {
       return;
     }
 
-    const monthlyRate = annualRate > 0 ? annualRate / 12 / 100 : 0;
-    const monthly =
-      monthlyRate > 0
-        ? (principal * monthlyRate) /
-          (1 - Math.pow(1 + monthlyRate, -tenorMonths))
-        : principal / Math.max(tenorMonths, 1);
-
     const elapsedMonths = form.isExisting
       ? Math.max(0, Number(form.elapsedMonths || 0))
       : 0;
 
-    const paid = Math.min(principal, Math.max(0, elapsedMonths * monthly));
-    const remaining = Math.max(0, principal - paid);
-    const status = remaining <= 0 ? "paid" : "active";
+    setIsSubmitting(true);
+    try {
+      const response = await fetch("/api/debts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name,
+          type: form.debtType,
+          debtType: form.debtType,
+          principal,
+          annualInterestRate: annualRate,
+          interestRate: annualRate,
+          tenorMonths,
+          startDate: form.startDate || today,
+          walletId: form.walletId || null,
+          notes: form.notes.trim(),
+          elapsedMonths,
+        }),
+      });
 
-    const newDebt = {
-      id: Date.now(),
-      name,
-      type: form.debtType,
-      status,
-      principal,
-      monthly,
-      paid,
-      remaining,
-      interestRate: annualRate,
-      tenorMonths,
-      startDate: form.startDate || today,
-      walletId: form.walletId || null,
-      walletName:
-        wallets.find((w) => String(w.id) === String(form.walletId))?.name ||
-        null,
-      notes: form.notes.trim(),
-    };
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Gagal menyimpan hutang");
 
-    setDebts((prev) => [newDebt, ...prev]);
-
-    if (paid > 0) {
-      setInstallments((prev) => [
-        {
-          id: Date.now() + 1,
-          debtName: name,
-          amount: paid,
-          date: new Date().toISOString(),
-        },
-        ...prev,
-      ]);
+      setIsModalOpen(false);
+      resetForm();
+      await fetchDebtData();
+    } catch (error) {
+      alert("Gagal menyimpan hutang: " + error.message);
+    } finally {
+      setIsSubmitting(false);
     }
-
-    setIsModalOpen(false);
-    resetForm();
   };
 
   return (
     <div className="space-y-6 pb-20 animate-in fade-in duration-700">
-      <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+      <section className="grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-4 gap-4 md:gap-5 items-stretch">
         {stats.map((item) => {
-          const Icon = item.icon;
           return (
-            <div
+            <DebtStatCard
               key={item.label}
-              className="bg-card border border-card-border rounded-[1.5rem] p-5 shadow-xl"
-            >
-              <div className="flex items-center gap-3">
-                <div
-                  className={`w-11 h-11 rounded-2xl flex items-center justify-center ${item.tone}`}
-                >
-                  <Icon size={20} />
-                </div>
-                <div>
-                  <p className="text-[10px] uppercase tracking-widest text-text-muted font-bold">
-                    {item.label}
-                  </p>
-                  <h3 className="text-2xl font-black text-text-main tracking-tight mt-1">
-                    {item.value}
-                  </h3>
-                </div>
-              </div>
-            </div>
+              label={item.label}
+              value={item.value}
+              icon={item.icon}
+              tone={item.tone}
+            />
           );
         })}
       </section>
@@ -275,7 +292,11 @@ const Debts = () => {
       </section>
 
       <section className="bg-card border border-card-border rounded-[1.75rem] shadow-2xl p-6 md:p-10">
-        {filteredDebts.length === 0 ? (
+        {isLoading ? (
+          <div className="min-h-[300px] flex flex-col items-center justify-center text-center">
+            <p className="text-sm text-text-muted">Memuat data hutang...</p>
+          </div>
+        ) : filteredDebts.length === 0 ? (
           <div className="min-h-[300px] flex flex-col items-center justify-center text-center">
             <div className="w-16 h-16 rounded-2xl bg-primary/10 text-primary flex items-center justify-center mb-5">
               <CreditCard size={28} />
@@ -318,6 +339,13 @@ const Debts = () => {
                     {formatRp(debt.principal)}
                   </span>
                 </div>
+                {(debt.walletName || debt.notes) && (
+                  <p className="mt-2 text-xs text-text-muted leading-relaxed">
+                    {debt.walletName ? `Dompet: ${debt.walletName}` : ""}
+                    {debt.walletName && debt.notes ? " • " : ""}
+                    {debt.notes || ""}
+                  </p>
+                )}
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4 text-sm">
                   <div>
                     <p className="text-text-muted">Cicilan/Bulan</p>
@@ -609,9 +637,10 @@ const Debts = () => {
 
               <button
                 type="submit"
-                className="w-full mt-2 bg-primary hover:bg-primary/90 text-white rounded-xl py-3 font-black"
+                disabled={isSubmitting}
+                className="w-full mt-2 bg-primary hover:bg-primary/90 disabled:bg-primary/60 text-white rounded-xl py-3 font-black"
               >
-                Simpan Hutang
+                {isSubmitting ? "Menyimpan..." : "Simpan Hutang"}
               </button>
             </form>
           </div>
