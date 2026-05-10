@@ -57,6 +57,8 @@ const Debts = () => {
   const [wallets, setWallets] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [formErrors, setFormErrors] = useState({});
+  const [submitError, setSubmitError] = useState("");
 
   const today = new Date().toISOString().split("T")[0];
 
@@ -178,8 +180,70 @@ const Debts = () => {
 
   const openAddModal = useCallback(() => {
     resetForm();
+    setFormErrors({});
+    setSubmitError("");
     setIsModalOpen(true);
   }, [resetForm]);
+
+  const updateFormField = useCallback((field, value) => {
+    setForm((prev) => ({ ...prev, [field]: value }));
+    setFormErrors((prev) => {
+      if (!prev[field]) return prev;
+      const next = { ...prev };
+      delete next[field];
+      return next;
+    });
+  }, []);
+
+  const validateDebtForm = useCallback((currentForm) => {
+    const errors = {};
+    const name = String(currentForm.name || "").trim();
+    const principal = Number(currentForm.principal);
+    const tenorMonths = Number(currentForm.tenorMonths);
+    const annualRate = Number(currentForm.interestRate || 0);
+    const elapsedMonths = currentForm.isExisting
+      ? Number(currentForm.elapsedMonths || 0)
+      : 0;
+
+    if (!name) {
+      errors.name = "Nama hutang wajib diisi";
+    } else if (name.length > 100) {
+      errors.name = "Nama hutang maksimal 100 karakter";
+    }
+
+    if (!Number.isFinite(principal) || principal < 100) {
+      errors.principal = "Pokok hutang minimal Rp100";
+    }
+
+    if (!Number.isInteger(tenorMonths) || tenorMonths < 1) {
+      errors.tenorMonths = "Tenor minimal 1 bulan";
+    }
+
+    if (!Number.isFinite(annualRate) || annualRate < 0 || annualRate > 100) {
+      errors.interestRate = "Bunga harus antara 0 sampai 100";
+    }
+
+    if (currentForm.isExisting) {
+      if (!Number.isFinite(elapsedMonths) || elapsedMonths < 0) {
+        errors.elapsedMonths = "Bulan berjalan tidak boleh negatif";
+      } else if (Number.isFinite(tenorMonths) && elapsedMonths > tenorMonths) {
+        errors.elapsedMonths = "Bulan berjalan tidak boleh melebihi tenor";
+      }
+    }
+
+    if (String(currentForm.notes || "").length > 500) {
+      errors.notes = "Catatan maksimal 500 karakter";
+    }
+
+    return errors;
+  }, []);
+
+  const inputClass = (fieldName) =>
+    `w-full bg-body/50 border rounded-xl px-4 py-3 outline-none ${
+      formErrors[fieldName]
+        ? "border-rose-500 focus:border-rose-500"
+        : "border-card-border focus:border-primary"
+    }`;
 
   useEffect(() => {
     const openModalFromHeader = () => openAddModal();
@@ -192,32 +256,23 @@ const Debts = () => {
   const handleAddDebt = async (e) => {
     e.preventDefault();
 
+    const localErrors = validateDebtForm(form);
+    if (Object.keys(localErrors).length > 0) {
+      setFormErrors(localErrors);
+      setSubmitError("Mohon perbaiki input yang masih invalid.");
+      return;
+    }
+
     const name = form.name.trim();
     const principal = Number(form.principal);
     const tenorMonths = Number(form.tenorMonths);
     const annualRate = Number(form.interestRate || 0);
 
-    if (!name) {
-      alert("Nama hutang wajib diisi");
-      return;
-    }
-    if (!Number.isFinite(principal) || principal <= 0) {
-      alert("Pokok hutang awal harus lebih dari 0");
-      return;
-    }
-    if (!Number.isFinite(tenorMonths) || tenorMonths <= 0) {
-      alert("Tenor awal (bulan) harus lebih dari 0");
-      return;
-    }
-    if (!Number.isFinite(annualRate) || annualRate < 0) {
-      alert("Bunga tahunan tidak valid");
-      return;
-    }
-
     const elapsedMonths = form.isExisting
       ? Math.max(0, Number(form.elapsedMonths || 0))
       : 0;
 
+    setSubmitError("");
     setIsSubmitting(true);
     try {
       const response = await fetch("/api/debts", {
@@ -226,7 +281,6 @@ const Debts = () => {
         body: JSON.stringify({
           name,
           type: form.debtType,
-          debtType: form.debtType,
           principal,
           annualInterestRate: annualRate,
           interestRate: annualRate,
@@ -239,13 +293,28 @@ const Debts = () => {
       });
 
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Gagal menyimpan hutang");
+      if (!response.ok) {
+        const detailMap = {};
+        if (Array.isArray(data.details)) {
+          data.details.forEach((item) => {
+            if (item?.field && item?.message) {
+              detailMap[item.field] = item.message;
+            }
+          });
+        }
+        if (Object.keys(detailMap).length > 0) {
+          setFormErrors((prev) => ({ ...prev, ...detailMap }));
+        }
+        throw new Error(data.error || "Gagal menyimpan hutang");
+      }
 
       setIsModalOpen(false);
       resetForm();
+      setFormErrors({});
+      setSubmitError("");
       await fetchDebtData();
     } catch (error) {
-      alert("Gagal menyimpan hutang: " + error.message);
+      setSubmitError(`Gagal menyimpan hutang: ${error.message}`);
     } finally {
       setIsSubmitting(false);
     }
@@ -442,6 +511,12 @@ const Debts = () => {
             </div>
 
             <form onSubmit={handleAddDebt} className="space-y-4">
+              {submitError && (
+                <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm font-medium text-rose-600">
+                  {submitError}
+                </div>
+              )}
+
               <div className="flex items-center justify-between rounded-xl border border-card-border bg-body/40 px-4 py-3">
                 <div>
                   <p className="text-sm font-bold text-text-main">
@@ -475,13 +550,14 @@ const Debts = () => {
                 </label>
                 <input
                   value={form.name}
-                  onChange={(e) =>
-                    setForm((prev) => ({ ...prev, name: e.target.value }))
-                  }
+                  onChange={(e) => updateFormField("name", e.target.value)}
                   placeholder="Contoh: KPR Rumah, Cicilan Motor"
-                  className="w-full bg-body/50 border border-card-border rounded-xl px-4 py-3 outline-none focus:border-primary"
+                  className={inputClass("name")}
                   required
                 />
+                {formErrors.name && (
+                  <p className="text-xs text-rose-500">{formErrors.name}</p>
+                )}
               </div>
 
               <div className="space-y-2">
@@ -490,10 +566,8 @@ const Debts = () => {
                 </label>
                 <select
                   value={form.debtType}
-                  onChange={(e) =>
-                    setForm((prev) => ({ ...prev, debtType: e.target.value }))
-                  }
-                  className="w-full bg-body/50 border border-card-border rounded-xl px-4 py-3 outline-none focus:border-primary"
+                  onChange={(e) => updateFormField("debtType", e.target.value)}
+                  className={inputClass("debtType")}
                 >
                   {debtTypeOptions.map((opt) => (
                     <option key={opt.value} value={opt.value}>
@@ -512,15 +586,17 @@ const Debts = () => {
                     type="number"
                     value={form.principal}
                     onChange={(e) =>
-                      setForm((prev) => ({
-                        ...prev,
-                        principal: e.target.value,
-                      }))
+                      updateFormField("principal", e.target.value)
                     }
                     placeholder="500000000"
-                    className="w-full bg-body/50 border border-card-border rounded-xl px-4 py-3 outline-none focus:border-primary"
+                    className={inputClass("principal")}
                     required
                   />
+                  {formErrors.principal && (
+                    <p className="text-xs text-rose-500">
+                      {formErrors.principal}
+                    </p>
+                  )}
                 </div>
                 <div className="space-y-2">
                   <label className="text-xs font-bold text-text-muted uppercase tracking-wider">
@@ -531,14 +607,16 @@ const Debts = () => {
                     step="0.01"
                     value={form.interestRate}
                     onChange={(e) =>
-                      setForm((prev) => ({
-                        ...prev,
-                        interestRate: e.target.value,
-                      }))
+                      updateFormField("interestRate", e.target.value)
                     }
                     placeholder="8.5"
-                    className="w-full bg-body/50 border border-card-border rounded-xl px-4 py-3 outline-none focus:border-primary"
+                    className={inputClass("interestRate")}
                   />
+                  {formErrors.interestRate && (
+                    <p className="text-xs text-rose-500">
+                      {formErrors.interestRate}
+                    </p>
+                  )}
                 </div>
               </div>
 
@@ -551,15 +629,17 @@ const Debts = () => {
                     type="number"
                     value={form.tenorMonths}
                     onChange={(e) =>
-                      setForm((prev) => ({
-                        ...prev,
-                        tenorMonths: e.target.value,
-                      }))
+                      updateFormField("tenorMonths", e.target.value)
                     }
                     placeholder="120"
-                    className="w-full bg-body/50 border border-card-border rounded-xl px-4 py-3 outline-none focus:border-primary"
+                    className={inputClass("tenorMonths")}
                     required
                   />
+                  {formErrors.tenorMonths && (
+                    <p className="text-xs text-rose-500">
+                      {formErrors.tenorMonths}
+                    </p>
+                  )}
                 </div>
                 <div className="space-y-2">
                   <label className="text-xs font-bold text-text-muted uppercase tracking-wider">
@@ -569,12 +649,9 @@ const Debts = () => {
                     type="date"
                     value={form.startDate}
                     onChange={(e) =>
-                      setForm((prev) => ({
-                        ...prev,
-                        startDate: e.target.value,
-                      }))
+                      updateFormField("startDate", e.target.value)
                     }
-                    className="w-full bg-body/50 border border-card-border rounded-xl px-4 py-3 outline-none focus:border-primary"
+                    className={inputClass("startDate")}
                     required
                   />
                 </div>
@@ -589,14 +666,16 @@ const Debts = () => {
                     type="number"
                     value={form.elapsedMonths}
                     onChange={(e) =>
-                      setForm((prev) => ({
-                        ...prev,
-                        elapsedMonths: e.target.value,
-                      }))
+                      updateFormField("elapsedMonths", e.target.value)
                     }
                     placeholder="Contoh: 6"
-                    className="w-full bg-body/50 border border-card-border rounded-xl px-4 py-3 outline-none focus:border-primary"
+                    className={inputClass("elapsedMonths")}
                   />
+                  {formErrors.elapsedMonths && (
+                    <p className="text-xs text-rose-500">
+                      {formErrors.elapsedMonths}
+                    </p>
+                  )}
                 </div>
               )}
 
@@ -606,10 +685,8 @@ const Debts = () => {
                 </label>
                 <select
                   value={form.walletId}
-                  onChange={(e) =>
-                    setForm((prev) => ({ ...prev, walletId: e.target.value }))
-                  }
-                  className="w-full bg-body/50 border border-card-border rounded-xl px-4 py-3 outline-none focus:border-primary"
+                  onChange={(e) => updateFormField("walletId", e.target.value)}
+                  className={inputClass("walletId")}
                 >
                   <option value="">Pilih dompet</option>
                   {wallets.map((w) => (
@@ -626,13 +703,14 @@ const Debts = () => {
                 </label>
                 <textarea
                   value={form.notes}
-                  onChange={(e) =>
-                    setForm((prev) => ({ ...prev, notes: e.target.value }))
-                  }
+                  onChange={(e) => updateFormField("notes", e.target.value)}
                   rows={3}
                   placeholder="Catatan tambahan..."
-                  className="w-full bg-body/50 border border-card-border rounded-xl px-4 py-3 outline-none focus:border-primary resize-none"
+                  className={`${inputClass("notes")} resize-none`}
                 />
+                {formErrors.notes && (
+                  <p className="text-xs text-rose-500">{formErrors.notes}</p>
+                )}
               </div>
 
               <button

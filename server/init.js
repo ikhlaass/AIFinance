@@ -132,7 +132,68 @@ async function initDB() {
     `);
     console.log("Debt installments table is ready.");
 
-    // 10. Ensure transactions has asset_id column for investment link
+    // 10. Create Debt Reminder Logs Table (dedup Telegram reminders)
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS debt_reminder_logs (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        debt_id INT NOT NULL,
+        user_id INT NOT NULL,
+        reminder_type VARCHAR(60) NOT NULL,
+        reminder_key VARCHAR(120) NOT NULL,
+        due_date DATE NOT NULL,
+        sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (debt_id) REFERENCES debts(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        UNIQUE KEY uniq_debt_reminder_key (user_id, debt_id, reminder_key),
+        INDEX idx_debt_reminder_due_date (due_date),
+        INDEX idx_debt_reminder_sent_at (sent_at)
+      )
+    `);
+    console.log("Debt reminder logs table is ready.");
+
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS debt_reminder_job_logs (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        source VARCHAR(80) NOT NULL,
+        attempted INT NOT NULL DEFAULT 0,
+        sent INT NOT NULL DEFAULT 0,
+        skipped INT NOT NULL DEFAULT 0,
+        failed INT NOT NULL DEFAULT 0,
+        status VARCHAR(40) NOT NULL DEFAULT 'ok',
+        note VARCHAR(255),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_debt_reminder_job_logs_created_at (created_at),
+        INDEX idx_debt_reminder_job_logs_source (source)
+      )
+    `);
+    console.log("Debt reminder job logs table is ready.");
+
+    // 11. Create AI Assignment Logs Table (audit trail for AI decisions)
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS ai_assignment_logs (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        transaction_id INT,
+        pending_assignment_id INT,
+        method VARCHAR(50) NOT NULL,
+        amount DECIMAL(15,2) NOT NULL,
+        category VARCHAR(100),
+        description TEXT,
+        chosen_wallet_id INT,
+        confidence DECIMAL(5,4) NOT NULL DEFAULT 0,
+        reason VARCHAR(255),
+        candidates JSON,
+        source VARCHAR(50),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        INDEX idx_ai_assignment_logs_user (user_id),
+        INDEX idx_ai_assignment_logs_created_at (created_at),
+        INDEX idx_ai_assignment_logs_method (method)
+      )
+    `);
+    console.log("AI assignment logs table is ready.");
+
+    // 11. Ensure transactions has asset_id column for investment link
     const [assetColumnRows] = await connection.query(
       `SELECT COUNT(*) AS count
        FROM information_schema.COLUMNS
@@ -178,14 +239,14 @@ async function initDB() {
     }
     console.log("Transactions schema sync for asset_id is ready.");
 
-    // 11. Insert Main User
+    // 12. Insert Main User
     await connection.query(`
       INSERT INTO users (id, name, email) 
       VALUES (1, 'Idrus', 'andi.ikhlas107@gmail.com')
       ON DUPLICATE KEY UPDATE name=name;
     `);
 
-    // 12. Optional dummy seed (disabled by default)
+    // 13. Optional dummy seed (disabled by default)
     if (process.env.SEED_DEMO === "true") {
       const wallets = [
         "Cash/Tunai",

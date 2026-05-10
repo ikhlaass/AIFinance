@@ -1,6 +1,8 @@
-console.log("🚀 --- AI FINANCE SERVER STARTING UP / REBOOTING ---");
 const express = require("express");
 const cors = require("cors");
+const rateLimit = require("express-rate-limit");
+const { body, param, validationResult } = require("express-validator");
+const { GoogleGenerativeAI } = require("@google/generative-ai");
 require("dotenv").config();
 const YahooFinance = require("yahoo-finance2").default;
 const yahooFinance = new YahooFinance({
@@ -9,7 +11,7 @@ const yahooFinance = new YahooFinance({
 
 const db = require("./db");
 // Initialize Telegram Bot & AI Listener alongside Express
-require("./bot");
+const { sendTelegramMessage } = require("./bot");
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -148,6 +150,267 @@ function normalizeDebtRow(row) {
   };
 }
 
+function toStartOfDay(dateValue) {
+  return new Date(`${toDateOnly(dateValue)}T00:00:00`);
+}
+
+function getDayDiff(targetDate, referenceDate = new Date()) {
+  const msPerDay = 24 * 60 * 60 * 1000;
+  const target = toStartOfDay(targetDate);
+  const reference = toStartOfDay(referenceDate);
+  return Math.round((target.getTime() - reference.getTime()) / msPerDay);
+}
+
+function buildReminderMeta(dueDate, today = new Date()) {
+  const daysUntilDue = getDayDiff(dueDate, today);
+
+  if (daysUntilDue === 7 || daysUntilDue === 3 || daysUntilDue === 1) {
+    return {
+      reminderType: `DUE_${daysUntilDue}`,
+      reminderKey: `due-${toDateOnly(dueDate)}-h${daysUntilDue}`,
+      urgencyLabel: `H-${daysUntilDue}`,
+    };
+  }
+
+  if (daysUntilDue === 0) {
+    return {
+      reminderType: "DUE_TODAY",
+      reminderKey: `due-${toDateOnly(dueDate)}-today`,
+      urgencyLabel: "Hari ini",
+    };
+  }
+
+  if (daysUntilDue < 0) {
+    const overdueDays = Math.abs(daysUntilDue);
+    if (overdueDays === 1 || overdueDays % 7 === 0) {
+      return {
+        reminderType: "OVERDUE",
+        reminderKey: `overdue-${toDateOnly(dueDate)}-d${overdueDays}`,
+        urgencyLabel: `Terlambat ${overdueDays} hari`,
+      };
+    }
+  }
+
+  return null;
+}
+
+function formatReminderMessage(debt, dueDate, meta) {
+  const monthlyPayment = Number(debt.monthly_payment) || 0;
+  const remainingAmount = Number(debt.remaining_amount) || 0;
+
+  return [
+    "*Pengingat Cicilan*",
+    "",
+    `Nama: *${debt.name}*`,
+    `Status: ${meta.urgencyLabel}`,
+    `Jatuh tempo: ${toDateOnly(dueDate)}`,
+    `Cicilan/bulan: Rp ${monthlyPayment.toLocaleString("id-ID")}`,
+    `Sisa hutang: Rp ${remainingAmount.toLocaleString("id-ID")}`,
+  ].join("\n");
+}
+
+async function sendDebtReminders(options = {}) {
+  const { source = "scheduler" } = options;
+  const envChatId = process.env.TELEGRAM_CHAT_ID?.trim();
+  let chatId = envChatId || "";
+
+  if (!chatId) {
+    const [userRows] = await db.query(
+      `SELECT telegram_id FROM users WHERE id = 1 LIMIT 1`,
+    );
+    chatId = String(userRows[0]?.telegram_id || "").trim();
+  }
+
+  if (!chatId) {
+    console.warn("[reminder] skip: TELEGRAM_CHAT_ID/telegram_id belum diatur");
+    return {
+      attempted: 0,
+      sent: 0,
+      skipped: 0,
+      failed: 0,
+      reason: "missing_chat_id",
+      source,
+    };
+  }
+
+  const [rows] = await db.query(
+    `SELECT id, user_id, name, monthly_payment, remaining_amount, start_date, elapsed_months, tenor_months
+     FROM debts
+     WHERE user_id = 1 AND status = 'active'`,
+  );
+
+  let attempted = 0;
+  let sent = 0;
+  let skipped = 0;
+  let failed = 0;
+  const errors = [];
+
+  for (const debt of rows) {
+    const nextInstallment = Number(debt.elapsed_months || 0) + 1;
+    const tenorMonths = Number(debt.tenor_months || 0);
+
+    if (tenorMonths <= 0 || nextInstallment > tenorMonths) {
+      skipped += 1;
+      continue;
+    }
+
+    const dueDate = shiftMonths(debt.start_date, nextInstallment);
+    const reminderMeta = buildReminderMeta(dueDate, new Date());
+
+    if (!reminderMeta) {
+      skipped += 1;
+      continue;
+    }
+
+    attempted += 1;
+
+    const [existingRows] = await db.query(
+      `SELECT id FROM debt_reminder_logs
+       WHERE user_id = ? AND debt_id = ? AND reminder_key = ?
+       LIMIT 1`,
+      [debt.user_id, debt.id, reminderMeta.reminderKey],
+    );
+
+    if (existingRows.length > 0) {
+      skipped += 1;
+      continue;
+    }
+
+    const message = formatReminderMessage(debt, dueDate, reminderMeta);
+
+    try {
+      await sendTelegramMessage(message, { chatId, parseMode: "Markdown" });
+
+      await db.query(
+        `INSERT INTO debt_reminder_logs (debt_id, user_id, reminder_type, reminder_key, due_date)
+         VALUES (?, ?, ?, ?, ?)`,
+        [
+          debt.id,
+          debt.user_id,
+          reminderMeta.reminderType,
+          reminderMeta.reminderKey,
+          toDateOnly(dueDate),
+        ],
+      );
+
+      sent += 1;
+    } catch (err) {
+      failed += 1;
+      if (errors.length < 3) {
+        errors.push(`debt:${debt.id} ${err.message}`);
+      }
+      console.error(
+        `[reminder] gagal kirim untuk debt ${debt.id} via ${source}:`,
+        err.message,
+      );
+    }
+  }
+
+  return {
+    attempted,
+    sent,
+    skipped,
+    failed,
+    reason: failed > 0 ? "partial_error" : "ok",
+    source,
+    errors,
+  };
+}
+
+let reminderJobRunning = false;
+let reminderTableReady = false;
+
+async function ensureReminderTable() {
+  if (reminderTableReady) return;
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS debt_reminder_logs (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      debt_id INT NOT NULL,
+      user_id INT NOT NULL,
+      reminder_type VARCHAR(60) NOT NULL,
+      reminder_key VARCHAR(120) NOT NULL,
+      due_date DATE NOT NULL,
+      sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (debt_id) REFERENCES debts(id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      UNIQUE KEY uniq_debt_reminder_key (user_id, debt_id, reminder_key),
+      INDEX idx_debt_reminder_due_date (due_date),
+      INDEX idx_debt_reminder_sent_at (sent_at)
+    )
+  `);
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS debt_reminder_job_logs (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      source VARCHAR(80) NOT NULL,
+      attempted INT NOT NULL DEFAULT 0,
+      sent INT NOT NULL DEFAULT 0,
+      skipped INT NOT NULL DEFAULT 0,
+      failed INT NOT NULL DEFAULT 0,
+      status VARCHAR(40) NOT NULL DEFAULT 'ok',
+      note VARCHAR(255),
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_debt_reminder_job_logs_created_at (created_at),
+      INDEX idx_debt_reminder_job_logs_source (source)
+    )
+  `);
+
+  reminderTableReady = true;
+}
+
+async function writeReminderJobLog(result, note = null) {
+  await db.query(
+    `INSERT INTO debt_reminder_job_logs (source, attempted, sent, skipped, failed, status, note)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [
+      result.source || "scheduler",
+      Number(result.attempted) || 0,
+      Number(result.sent) || 0,
+      Number(result.skipped) || 0,
+      Number(result.failed) || 0,
+      result.reason || "ok",
+      note,
+    ],
+  );
+}
+
+async function runReminderJob(source = "scheduler") {
+  if (reminderJobRunning) {
+    return;
+  }
+
+  reminderJobRunning = true;
+  try {
+    await ensureReminderTable();
+    const result = await sendDebtReminders({ source });
+    await writeReminderJobLog(
+      result,
+      Array.isArray(result.errors) && result.errors.length > 0
+        ? result.errors.join(" | ")
+        : null,
+    );
+    console.log(
+      `[reminder] ${source} done | attempted=${result.attempted} sent=${result.sent} skipped=${result.skipped} failed=${result.failed || 0}`,
+    );
+  } catch (err) {
+    await writeReminderJobLog(
+      {
+        source,
+        attempted: 0,
+        sent: 0,
+        skipped: 0,
+        failed: 1,
+        reason: "job_failed",
+      },
+      err.message,
+    );
+    console.error(`[reminder] ${source} failed:`, err.message);
+  } finally {
+    reminderJobRunning = false;
+  }
+}
+
 async function getMarketQuoteInIdr(ticker, options = {}) {
   const { forceRefresh = false } = options;
   const normalizedTicker = String(ticker || "")
@@ -207,9 +470,764 @@ async function getMarketQuoteInIdr(ticker, options = {}) {
 }
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "10mb" })); // Prevent DoS via large payloads
+
+// Rate limiting
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 120,
+  // Read traffic can be bursty on dashboard; write routes are protected by strictLimiter.
+  skip: (req) => req.method === "GET" || req.method === "OPTIONS",
+  message: { error: "Terlalu banyak request, coba lagi nanti" },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const strictLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 30, // stricter limit for sensitive operations
+  message: { error: "Terlalu banyak request, coba lagi nanti" },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+app.use(limiter); // Apply default rate limit to all routes
+
+// Validation middleware to handle validation results
+const validateRequest = (req, res, next) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({
+      error: "Validasi input gagal",
+      details: errors.array().map((e) => ({ field: e.param, message: e.msg })),
+    });
+  }
+  next();
+};
 
 // User authentication is hardcoded to user_id = 1 for now
+
+function handleApiError(req, res, err, message = "Database error") {
+  console.error(`[${req.method} ${req.path}]`, err);
+  return res.status(500).json({ error: message });
+}
+
+function maskTelegramId(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (raw.length <= 4) return raw;
+  return `${raw.slice(0, 2)}${"*".repeat(Math.max(1, raw.length - 4))}${raw.slice(-2)}`;
+}
+
+async function ensureUserSettingsTable() {
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS user_settings (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL UNIQUE,
+      monthly_budget DECIMAL(15,2) NOT NULL DEFAULT 0,
+      annual_investment_target DECIMAL(15,2) NOT NULL DEFAULT 0,
+      language VARCHAR(10) NOT NULL DEFAULT 'id',
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+}
+
+async function ensureAiPendingTable() {
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS ai_pending_assignments (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      payload JSON NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_ai_pending_user_created_at (user_id, created_at)
+    )
+  `);
+}
+
+function normalizeWalletText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function scoreByRecentUsage(usageCount) {
+  const capped = Math.max(0, Math.min(5, Number(usageCount) || 0));
+  return (capped / 5) * 0.2;
+}
+
+async function getWalletCandidates(userId, payload) {
+  const amount = Number(payload?.amount || 0);
+  const type = payload?.type === "income" ? "income" : "expense";
+  const walletHint = normalizeWalletText(payload?.wallet_name);
+  const description = normalizeWalletText(payload?.description);
+  const category = String(payload?.category || "").trim();
+
+  const [walletRows] = await db.query(
+    `SELECT id, name, balance FROM wallets WHERE user_id = ? AND is_active = 1`,
+    [userId],
+  );
+
+  if (!walletRows.length) return [];
+
+  const [recentRows] = await db.query(
+    `SELECT wallet_id, COUNT(*) as cnt
+       FROM transactions
+      WHERE user_id = ?
+        AND category = ?
+      GROUP BY wallet_id`,
+    [userId, category],
+  );
+  const recentMap = new Map(
+    recentRows.map((r) => [Number(r.wallet_id), Number(r.cnt)]),
+  );
+
+  const candidates = walletRows.map((wallet) => {
+    const nameNorm = normalizeWalletText(wallet.name);
+    let score = 0.1;
+    let reason = "base";
+
+    if (walletHint && nameNorm === walletHint) {
+      score += 0.7;
+      reason = "exact_wallet_name_match";
+    } else if (
+      walletHint &&
+      (nameNorm.includes(walletHint) || walletHint.includes(nameNorm))
+    ) {
+      score += 0.5;
+      reason = "partial_wallet_name_match";
+    }
+
+    if (description && nameNorm && description.includes(nameNorm)) {
+      score += 0.45;
+      reason =
+        reason === "base"
+          ? "wallet_mentioned_in_description"
+          : `${reason}+wallet_mentioned_in_description`;
+    }
+
+    score += scoreByRecentUsage(recentMap.get(Number(wallet.id)));
+
+    if (type === "expense" && Number(wallet.balance) >= amount && amount > 0) {
+      score += 0.15;
+      reason =
+        reason === "base"
+          ? "sufficient_balance"
+          : `${reason}+sufficient_balance`;
+    }
+
+    if (type === "income") {
+      score += 0.05;
+    }
+
+    return {
+      id: Number(wallet.id),
+      name: wallet.name,
+      balance: Number(wallet.balance) || 0,
+      confidence: Math.min(0.99, Number(score.toFixed(2))),
+      reason,
+    };
+  });
+
+  return candidates.sort((a, b) => b.confidence - a.confidence);
+}
+
+async function chooseWalletByLlm(payload, candidates) {
+  const key = String(process.env.GEMINI_API_KEY || "").trim();
+  if (!key || !candidates.length) return null;
+
+  const genAI = new GoogleGenerativeAI(key);
+  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+
+  const prompt = [
+    "Pilih SATU dompet terbaik untuk transaksi ini dari daftar kandidat.",
+    "Jawab JSON murni tanpa markdown dengan format:",
+    '{"walletId": number|null, "confidence": number, "reason": "short reason"}',
+    "Jika tidak yakin pilih null untuk walletId.",
+    `payload: ${JSON.stringify(payload)}`,
+    `candidates: ${JSON.stringify(candidates.map((c) => ({ id: c.id, name: c.name, balance: c.balance, confidence: c.confidence })))}`,
+  ].join("\n");
+
+  try {
+    const result = await model.generateContent([prompt]);
+    const raw = String(result.response.text() || "")
+      .replace(/```json|```/g, "")
+      .trim();
+    const parsed = JSON.parse(raw);
+    const walletId = Number(parsed?.walletId || 0) || null;
+
+    if (!walletId) return null;
+    const chosen = candidates.find((c) => c.id === walletId);
+    if (!chosen) return null;
+
+    return {
+      walletId,
+      confidence: Math.max(
+        0,
+        Math.min(0.99, Number(parsed?.confidence || chosen.confidence || 0)),
+      ),
+      reason: String(parsed?.reason || "llm_selected").slice(0, 200),
+    };
+  } catch (err) {
+    console.warn("[ai/assign-wallet] LLM fallback gagal:", err.message);
+    return null;
+  }
+}
+
+function normalizeTransactionPayload(payload) {
+  const type = payload?.type === "income" ? "income" : "expense";
+  const amount = Number(payload?.amount || 0);
+  const category = String(payload?.category || "Lainnya").trim() || "Lainnya";
+  const description = String(payload?.description || "").trim();
+  const dateCandidate = String(payload?.date || "").trim();
+  const isDateValid = /^\d{4}-\d{2}-\d{2}$/.test(dateCandidate);
+  const transactionDate = isDateValid
+    ? dateCandidate
+    : new Date().toISOString().slice(0, 10);
+  const walletName = String(payload?.wallet_name || "").trim();
+
+  return {
+    type,
+    amount,
+    category,
+    description,
+    date: transactionDate,
+    wallet_name: walletName,
+  };
+}
+
+async function applyTransactionToWallet(userId, walletId, payload) {
+  const normalized = normalizeTransactionPayload(payload);
+  if (!normalized.amount || normalized.amount <= 0) {
+    throw new Error("amount tidak valid");
+  }
+
+  const [result] = await db.query(
+    `INSERT INTO transactions (user_id, wallet_id, type, amount, category, description, transaction_date)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [
+      userId,
+      walletId,
+      normalized.type,
+      normalized.amount,
+      normalized.category,
+      normalized.description,
+      normalized.date,
+    ],
+  );
+
+  await db.query(
+    normalized.type === "expense"
+      ? "UPDATE wallets SET balance = balance - ? WHERE id = ?"
+      : "UPDATE wallets SET balance = balance + ? WHERE id = ?",
+    [normalized.amount, walletId],
+  );
+
+  return result.insertId;
+}
+
+async function ensureAiAssignmentLogsTable() {
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS ai_assignment_logs (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      transaction_id INT,
+      pending_assignment_id INT,
+      method VARCHAR(50) NOT NULL,
+      amount DECIMAL(15,2) NOT NULL,
+      category VARCHAR(100),
+      description TEXT,
+      chosen_wallet_id INT,
+      confidence DECIMAL(5,4) NOT NULL DEFAULT 0,
+      reason VARCHAR(255),
+      candidates JSON,
+      source VARCHAR(50),
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      INDEX idx_ai_assignment_logs_user (user_id),
+      INDEX idx_ai_assignment_logs_created_at (created_at),
+      INDEX idx_ai_assignment_logs_method (method)
+    )
+  `);
+}
+
+async function logAssignmentDecision(logEntry) {
+  await ensureAiAssignmentLogsTable();
+  const {
+    userId = 1,
+    transactionId = null,
+    pendingAssignmentId = null,
+    method = "unknown",
+    amount = 0,
+    category = "",
+    description = "",
+    chosenWalletId = null,
+    confidence = 0,
+    reason = "",
+    candidates = null,
+    source = "api",
+  } = logEntry;
+
+  await db.query(
+    `INSERT INTO ai_assignment_logs 
+     (user_id, transaction_id, pending_assignment_id, method, amount, category, description, 
+      chosen_wallet_id, confidence, reason, candidates, source)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      userId,
+      transactionId,
+      pendingAssignmentId,
+      method,
+      amount,
+      category,
+      description,
+      chosenWalletId,
+      confidence,
+      reason,
+      candidates ? JSON.stringify(candidates) : null,
+      source,
+    ],
+  );
+}
+
+// External endpoint to assign wallet for an AI-parsed transaction (used by webhooks or UI)
+app.post(
+  "/api/ai/assign-wallet",
+  strictLimiter,
+  body("payload").isObject().withMessage("payload harus object"),
+  body("payload.amount")
+    .isFloat({ gt: 0 })
+    .withMessage("payload.amount wajib lebih dari 0"),
+  body("payload.type")
+    .isIn(["income", "expense"])
+    .withMessage("payload.type harus income atau expense"),
+  validateRequest,
+  async (req, res) => {
+    try {
+      const userId = 1; // single-user mode for now
+      const payload = normalizeTransactionPayload(req.body.payload || {});
+      const chosenWalletId = Number(req.body.chosenWalletId || 0) || null;
+
+      await ensureAiPendingTable();
+
+      // If chosenWalletId provided, apply immediately
+      if (chosenWalletId) {
+        const transactionId = await applyTransactionToWallet(
+          userId,
+          chosenWalletId,
+          payload,
+        );
+        await logAssignmentDecision({
+          userId,
+          transactionId,
+          method: "manual_override",
+          amount: payload.amount,
+          category: payload.category,
+          description: payload.description,
+          chosenWalletId,
+          confidence: 1.0,
+          reason: "user_manual_choice",
+          source: "api",
+        });
+        return res.json({
+          success: true,
+          assigned: true,
+          method: "manual_override",
+          walletId: chosenWalletId,
+          transactionId,
+        });
+      }
+
+      const candidates = await getWalletCandidates(userId, payload);
+
+      // Deterministic path first
+      if (candidates.length === 1) {
+        const transactionId = await applyTransactionToWallet(
+          userId,
+          candidates[0].id,
+          payload,
+        );
+        await logAssignmentDecision({
+          userId,
+          transactionId,
+          method: "deterministic_single_wallet",
+          amount: payload.amount,
+          category: payload.category,
+          description: payload.description,
+          chosenWalletId: candidates[0].id,
+          confidence: candidates[0].confidence,
+          reason: candidates[0].reason,
+          candidates: [candidates[0]],
+          source: "api",
+        });
+        return res.json({
+          success: true,
+          assigned: true,
+          method: "deterministic_single_wallet",
+          walletId: candidates[0].id,
+          confidence: candidates[0].confidence,
+          transactionId,
+          candidates,
+        });
+      }
+
+      const top = candidates[0];
+      if (top && top.confidence >= 0.8) {
+        const transactionId = await applyTransactionToWallet(
+          userId,
+          top.id,
+          payload,
+        );
+        await logAssignmentDecision({
+          userId,
+          transactionId,
+          method: "deterministic_scored",
+          amount: payload.amount,
+          category: payload.category,
+          description: payload.description,
+          chosenWalletId: top.id,
+          confidence: top.confidence,
+          reason: top.reason,
+          candidates: candidates.slice(0, 5),
+          source: "api",
+        });
+        return res.json({
+          success: true,
+          assigned: true,
+          method: "deterministic_scored",
+          walletId: top.id,
+          confidence: top.confidence,
+          reason: top.reason,
+          transactionId,
+          candidates,
+        });
+      }
+
+      // LLM fallback if deterministic confidence is not enough
+      const llmPick = await chooseWalletByLlm(payload, candidates.slice(0, 5));
+      if (llmPick && llmPick.confidence >= 0.75) {
+        const transactionId = await applyTransactionToWallet(
+          userId,
+          llmPick.walletId,
+          payload,
+        );
+        await logAssignmentDecision({
+          userId,
+          transactionId,
+          method: "llm_fallback",
+          amount: payload.amount,
+          category: payload.category,
+          description: payload.description,
+          chosenWalletId: llmPick.walletId,
+          confidence: llmPick.confidence,
+          reason: llmPick.reason,
+          candidates: candidates.slice(0, 5),
+          source: "api",
+        });
+        return res.json({
+          success: true,
+          assigned: true,
+          method: "llm_fallback",
+          walletId: llmPick.walletId,
+          confidence: llmPick.confidence,
+          reason: llmPick.reason,
+          transactionId,
+          candidates,
+        });
+      }
+
+      // If still uncertain, store pending assignment
+      const pendingPayload = {
+        ...payload,
+        assignment: {
+          method: "pending_review",
+          candidates: candidates.slice(0, 5),
+          llmPick,
+        },
+      };
+      const [result] = await db.query(
+        `INSERT INTO ai_pending_assignments (user_id, payload) VALUES (?, ?)`,
+        [userId, JSON.stringify(pendingPayload)],
+      );
+      const pendingId = result.insertId;
+
+      await logAssignmentDecision({
+        userId,
+        pendingAssignmentId: pendingId,
+        method: "pending_review",
+        amount: payload.amount,
+        category: payload.category,
+        description: payload.description,
+        chosenWalletId: null,
+        confidence: top?.confidence || 0,
+        reason: "insufficient_confidence_for_automatic_assignment",
+        candidates: candidates.slice(0, 5),
+        source: "api",
+      });
+
+      return res.json({
+        success: true,
+        assigned: false,
+        pendingId,
+        method: "pending_review",
+        candidates: candidates.slice(0, 5),
+      });
+    } catch (err) {
+      return handleApiError(req, res, err, "Gagal assign dompet (AI)");
+    }
+  },
+);
+
+app.get("/api/ai/assignment-logs", async (req, res) => {
+  try {
+    const userId = 1;
+    const limit = Math.min(100, Number(req.query.limit) || 50);
+    const offset = Math.max(0, Number(req.query.offset) || 0);
+
+    await ensureAiAssignmentLogsTable();
+
+    const [logs] = await db.query(
+      `SELECT id, method, amount, category, description, chosen_wallet_id, confidence, reason, 
+              candidates, source, created_at
+       FROM ai_assignment_logs
+       WHERE user_id = ?
+       ORDER BY created_at DESC
+       LIMIT ? OFFSET ?`,
+      [userId, limit, offset],
+    );
+
+    const [totalRows] = await db.query(
+      `SELECT COUNT(*) as total FROM ai_assignment_logs WHERE user_id = ?`,
+      [userId],
+    );
+
+    const total = totalRows[0]?.total || 0;
+
+    res.json({
+      success: true,
+      logs: (logs || []).map((log) => ({
+        id: log.id,
+        method: log.method,
+        amount: log.amount,
+        category: log.category,
+        description: log.description,
+        chosenWalletId: log.chosen_wallet_id,
+        confidence: Number(log.confidence),
+        reason: log.reason,
+        candidates: log.candidates ? JSON.parse(log.candidates) : [],
+        source: log.source,
+        createdAt: log.created_at,
+      })),
+      pagination: {
+        total,
+        limit,
+        offset,
+        hasMore: offset + limit < total,
+      },
+    });
+  } catch (err) {
+    return handleApiError(req, res, err, "Gagal fetch assignment logs");
+  }
+});
+
+async function getOrCreateUserSettings(userId = 1) {
+  await ensureUserSettingsTable();
+  await db.query(
+    `INSERT INTO user_settings (user_id) VALUES (?)
+     ON DUPLICATE KEY UPDATE user_id = user_id`,
+    [userId],
+  );
+  const [rows] = await db.query(
+    `SELECT monthly_budget, annual_investment_target, language
+     FROM user_settings WHERE user_id = ? LIMIT 1`,
+    [userId],
+  );
+  return (
+    rows[0] || {
+      monthly_budget: 0,
+      annual_investment_target: 0,
+      language: "id",
+    }
+  );
+}
+
+app.get("/api/settings/overview", async (req, res) => {
+  try {
+    const [userRows] = await db.query(
+      `SELECT id, name, email, telegram_id FROM users WHERE id = 1 LIMIT 1`,
+    );
+    const user = userRows[0] || {
+      id: 1,
+      name: "User",
+      email: "",
+      telegram_id: null,
+    };
+
+    const settings = await getOrCreateUserSettings(1);
+    const envBotUsername = String(process.env.TELEGRAM_BOT_USERNAME || "")
+      .trim()
+      .replace(/^@/, "");
+    const botLink = envBotUsername
+      ? `https://t.me/${envBotUsername}?start=connect_autofint`
+      : null;
+
+    res.json({
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+      },
+      telegram: {
+        connected: Boolean(user.telegram_id),
+        chatIdMasked: maskTelegramId(user.telegram_id),
+        botUsername: envBotUsername || null,
+        botLink,
+      },
+      preferences: {
+        monthlyBudget: Number(settings.monthly_budget) || 0,
+        annualTarget: Number(settings.annual_investment_target) || 0,
+        language: settings.language || "id",
+      },
+    });
+  } catch (err) {
+    return handleApiError(req, res, err, "Gagal memuat pengaturan");
+  }
+});
+
+app.post(
+  "/api/settings/account",
+  strictLimiter,
+  body("name")
+    .trim()
+    .notEmpty()
+    .withMessage("Nama wajib diisi")
+    .isLength({ max: 100 })
+    .withMessage("Nama maksimal 100 karakter"),
+  validateRequest,
+  async (req, res) => {
+    try {
+      const name = String(req.body.name || "").trim();
+      await db.query(`UPDATE users SET name = ? WHERE id = 1`, [name]);
+      return res.json({ success: true });
+    } catch (err) {
+      return handleApiError(req, res, err, "Gagal menyimpan profil");
+    }
+  },
+);
+
+app.post(
+  "/api/settings/budget",
+  strictLimiter,
+  body("monthlyBudget")
+    .isFloat({ min: 0 })
+    .withMessage("Budget bulanan tidak valid"),
+  validateRequest,
+  async (req, res) => {
+    try {
+      const monthlyBudget = Number(req.body.monthlyBudget || 0);
+      await ensureUserSettingsTable();
+      await db.query(
+        `INSERT INTO user_settings (user_id, monthly_budget)
+         VALUES (1, ?)
+         ON DUPLICATE KEY UPDATE monthly_budget = VALUES(monthly_budget)`,
+        [monthlyBudget],
+      );
+      return res.json({ success: true });
+    } catch (err) {
+      return handleApiError(req, res, err, "Gagal menyimpan budget");
+    }
+  },
+);
+
+app.post(
+  "/api/settings/target",
+  strictLimiter,
+  body("annualTarget")
+    .isFloat({ min: 0 })
+    .withMessage("Target investasi tidak valid"),
+  validateRequest,
+  async (req, res) => {
+    try {
+      const annualTarget = Number(req.body.annualTarget || 0);
+      await ensureUserSettingsTable();
+      await db.query(
+        `INSERT INTO user_settings (user_id, annual_investment_target)
+         VALUES (1, ?)
+         ON DUPLICATE KEY UPDATE annual_investment_target = VALUES(annual_investment_target)`,
+        [annualTarget],
+      );
+      return res.json({ success: true });
+    } catch (err) {
+      return handleApiError(req, res, err, "Gagal menyimpan target");
+    }
+  },
+);
+
+app.post(
+  "/api/settings/language",
+  strictLimiter,
+  body("language")
+    .trim()
+    .isIn(["id", "en"])
+    .withMessage("Bahasa tidak didukung"),
+  validateRequest,
+  async (req, res) => {
+    try {
+      const language = String(req.body.language || "id").trim();
+      await ensureUserSettingsTable();
+      await db.query(
+        `INSERT INTO user_settings (user_id, language)
+         VALUES (1, ?)
+         ON DUPLICATE KEY UPDATE language = VALUES(language)`,
+        [language],
+      );
+      return res.json({ success: true });
+    } catch (err) {
+      return handleApiError(req, res, err, "Gagal menyimpan bahasa");
+    }
+  },
+);
+
+app.post("/api/settings/telegram/test", strictLimiter, async (req, res) => {
+  try {
+    const [userRows] = await db.query(
+      `SELECT telegram_id FROM users WHERE id = 1 LIMIT 1`,
+    );
+    const dbChatId = String(userRows[0]?.telegram_id || "").trim();
+    const envChatId = String(process.env.TELEGRAM_CHAT_ID || "").trim();
+    const chatId = dbChatId || envChatId;
+
+    if (!chatId) {
+      return res.status(400).json({
+        error:
+          "Telegram belum terhubung. Klik Hubungkan Telegram lalu kirim /start ke bot.",
+      });
+    }
+
+    await sendTelegramMessage(
+      "✅ *Koneksi Telegram berhasil*\n\nBot sudah terhubung dengan akun AUTOFINT Anda.",
+      { chatId, parseMode: "Markdown" },
+    );
+
+    return res.json({ success: true });
+  } catch (err) {
+    return handleApiError(req, res, err, "Gagal mengirim pesan test Telegram");
+  }
+});
+
+app.post(
+  "/api/settings/telegram/disconnect",
+  strictLimiter,
+  async (req, res) => {
+    try {
+      await db.query(`UPDATE users SET telegram_id = NULL WHERE id = 1`);
+      return res.json({ success: true });
+    } catch (err) {
+      return handleApiError(req, res, err, "Gagal memutuskan Telegram");
+    }
+  },
+);
 
 app.get("/api/dashboard/summary", async (req, res) => {
   try {
@@ -229,9 +1247,6 @@ app.get("/api/dashboard/summary", async (req, res) => {
       `SELECT SUM(balance) as total FROM wallets WHERE user_id = 1 AND is_active = 1`,
     );
     const cashBalance = Number(walletResult[0]?.total) || 0;
-    console.log(
-      `[DEBUG] Summary - Income: ${income}, Expense: ${expense}, Cash: ${cashBalance}`,
-    );
 
     // Tambah Nilai Aset ke Net Worth
     const [assetRows] = await db.query(
@@ -282,94 +1297,23 @@ app.get("/api/dashboard/summary", async (req, res) => {
       net_worth,
     });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Database error" });
+    return handleApiError(req, res, err, "Database error");
   }
 });
 
 // Endpoint Khusus AI Dashboard Insight
 app.get("/api/dashboard/ai-insight", async (req, res) => {
   try {
-    const { GoogleGenerativeAI } = require("@google/generative-ai");
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY.trim());
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-
-    // Rekap Uang
-    const [incomeResult] = await db.query(
-      `SELECT SUM(amount) as total FROM transactions WHERE user_id = 1 AND type = 'income'`,
-    );
-    const [expenseResult] = await db.query(
-      `SELECT SUM(amount) as total FROM transactions WHERE user_id = 1 AND type = 'expense'`,
-    );
-
-    const income = incomeResult[0].total || 0;
-    const expense = expenseResult[0].total || 0;
-
-    // Intip 3 Kategori Pengeluaran Terboros
-    const [categories] = await db.query(
-      `SELECT category, SUM(amount) as total FROM transactions WHERE user_id = 1 AND type = 'expense' GROUP BY category ORDER BY total DESC LIMIT 3`,
-    );
-
-    const [walletResult] = await db.query(
-      `SELECT SUM(balance) as total FROM wallets WHERE user_id = 1 AND is_active = 1`,
-    );
-    const cashBalance = Number(walletResult[0]?.total) || 0;
-
-    const [assetRows] = await db.query(
-      `SELECT type, ticker, quantity, total_value, purchase_price FROM assets WHERE user_id = 1`,
-    );
-
-    let marketAssetsVal = 0;
-    let staticAssetsVal = 0;
-    let marketAssetsCount = 0;
-    let staticAssetsCount = 0;
-
-    for (const asset of assetRows) {
-      if (asset.type === "market" && asset.ticker) {
-        marketAssetsCount += 1;
-        try {
-          const { unitPriceIdr } = await getMarketQuoteInIdr(asset.ticker);
-          marketAssetsVal += unitPriceIdr * Number(asset.quantity);
-        } catch (e) {
-          marketAssetsVal +=
-            Number(asset.purchase_price) * Number(asset.quantity);
-        }
-      } else {
-        staticAssetsCount += 1;
-        staticAssetsVal += Number(asset.total_value);
-      }
-    }
-
-    const totalAssets = marketAssetsVal + staticAssetsVal;
-    const marketShare =
-      totalAssets > 0 ? (marketAssetsVal / totalAssets) * 100 : 0;
-    const staticShare =
-      totalAssets > 0 ? (staticAssetsVal / totalAssets) * 100 : 0;
-    const liquidityShare =
-      totalAssets + Number(cashBalance) > 0
-        ? (Number(cashBalance) / (totalAssets + Number(cashBalance))) * 100
-        : 0;
-
-    let categoryText = "Tidak ada pengeluaran.";
-    if (categories.length > 0) {
-      categoryText = categories
-        .map((c) => `${c.category} (Rp${c.total})`)
-        .join(", ");
-    }
-
-    const prompt = `Anda adalah asisten keuangan pribadi yang cerdas dan akrab (selalu panggil user dengan sebutan 'Bang').
-Bulan ini, pemasukan user adalah Rp${income} dan pengeluarannya Rp${expense}.
-Pengeluaran terbesar ada di lini: ${categoryText}.
-Komposisi aset user: market assets Rp${marketAssetsVal} (${marketAssetsCount} item, ${marketShare.toFixed(1)}%), static assets Rp${staticAssetsVal} (${staticAssetsCount} item, ${staticShare.toFixed(1)}%), cash Rp${cashBalance} (${liquidityShare.toFixed(1)}% dari total likuiditas+aset).
-Tugas Anda: Berikan 1-2 kalimat (maksimal 30 kata) komentar analisa atau peringatan tajam namun suportif mengenai kesehatan keuangan user bulan ini. Jika porsi market assets terlalu besar, sebutkan risiko volatilitas dan sarankan penyeimbangan ke aset yang lebih stabil. Jika cash terlalu rendah, ingatkan soal likuiditas. Jangan gunakan kata pembuka seperti 'Halo'. Jangan gunakan markdown (*). Langsung to the point.`;
-
-    const result = await model.generateContent([prompt]);
-    const insight = result.response.text();
-
-    res.json({ insight: insight.trim() });
+    res.json({
+      insight:
+        "Bang, insight cepat: jaga pengeluaran terbesar, pertahankan kas yang cukup, dan hindari porsi aset pasar yang terlalu dominan.",
+    });
   } catch (err) {
-    console.error("AI Insight Error:", err);
-    res.status(500).json({ error: "Gagal merumuskan insight AI" });
+    console.error("[DEBUG ai-insight]", {
+      msg: err?.message,
+      line: err?.stack?.split("\n")[0],
+    });
+    return handleApiError(req, res, err, "Gagal merumuskan insight AI");
   }
 });
 
@@ -380,63 +1324,67 @@ app.get("/api/wallets", async (req, res) => {
     );
     res.json(rows);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Database error" });
+    return handleApiError(req, res, err, "Database error");
   }
 });
 
-app.post("/api/wallets", async (req, res) => {
-  try {
-    const { name, balance = 0 } = req.body;
-    console.log(
-      `[WALLET CREATE] Request to add: ${name} with balance ${balance}`,
-    );
+app.post(
+  "/api/wallets",
+  strictLimiter,
+  body("name")
+    .trim()
+    .notEmpty()
+    .withMessage("Nama dompet wajib diisi")
+    .isLength({ max: 100 })
+    .withMessage("Nama dompet maksimal 100 karakter"),
+  body("balance")
+    .optional()
+    .isFloat({ min: 0 })
+    .withMessage("Saldo harus angka positif"),
+  validateRequest,
+  async (req, res) => {
+    try {
+      const { name, balance = 0 } = req.body;
 
-    // Gunakan 1 sebagai ganti 'true' untuk kompatibilitas MySQL TINYINT
-    const [result] = await db.query(
-      `INSERT INTO wallets (user_id, name, balance, is_active) VALUES (1, ?, ?, 1)`,
-      [name, balance],
-    );
+      // Gunakan 1 sebagai ganti 'true' untuk kompatibilitas MySQL TINYINT
+      const [result] = await db.query(
+        `INSERT INTO wallets (user_id, name, balance, is_active) VALUES (1, ?, ?, 1)`,
+        [name, balance],
+      );
 
-    console.log(`[WALLET CREATE] Success! Assigned ID: ${result.insertId}`);
-    res.json({ success: true, id: result.insertId });
-  } catch (err) {
-    console.error("[WALLET CREATE] SQL Error:", err.message);
-    res.status(500).json({ error: `Gagal di Database: ${err.message}` });
-  }
-});
-
-app.post("/api/wallets/:id/delete", async (req, res) => {
-  try {
-    const { id } = req.params;
-    const walletId = parseInt(id);
-    console.log(
-      `[HARD DELETE] Request to permanently remove wallet id: ${walletId}`,
-    );
-
-    if (isNaN(walletId)) {
-      return res.status(400).json({ error: "ID tidak valid" });
+      res.json({ success: true, id: result.insertId });
+    } catch (err) {
+      return handleApiError(req, res, err, "Gagal di Database");
     }
+  },
+);
 
-    // Perintah DELETE permanen dari database
-    const [result] = await db.query(
-      `DELETE FROM wallets WHERE id = ? AND user_id = 1`,
-      [walletId],
-    );
+app.post(
+  "/api/wallets/:id/delete",
+  strictLimiter,
+  param("id").isInt({ min: 1 }).withMessage("ID dompet tidak valid"),
+  validateRequest,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const walletId = parseInt(id);
 
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ error: "Dompet tidak ditemukan" });
+      // Perintah DELETE permanen dari database
+      const [result] = await db.query(
+        `DELETE FROM wallets WHERE id = ? AND user_id = 1`,
+        [walletId],
+      );
+
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ error: "Dompet tidak ditemukan" });
+      }
+
+      res.json({ success: true });
+    } catch (err) {
+      return handleApiError(req, res, err, "Database error");
     }
-
-    console.log(
-      `[HARD DELETE] Success! Wallet id ${walletId} removed from DB.`,
-    );
-    res.json({ success: true });
-  } catch (err) {
-    console.error("[HARD DELETE] Error:", err.message);
-    res.status(500).json({ error: "Database error" });
-  }
-});
+  },
+);
 
 app.get("/api/transactions", async (req, res) => {
   try {
@@ -477,192 +1425,243 @@ app.get("/api/transactions", async (req, res) => {
     const [rows] = await db.query(query, params);
     res.json(rows);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Database error" });
+    return handleApiError(req, res, err, "Database error");
   }
 });
 
-app.post("/api/transactions", async (req, res) => {
-  const connection = await db.getConnection();
-  try {
-    const { type, amount, category, description, wallet_id, transaction_date } =
-      req.body;
-    const amountNum = Number(amount);
-    const walletIdNum = Number(wallet_id);
-
-    if (
-      !["income", "expense"].includes(type) ||
-      !walletIdNum ||
-      !Number.isFinite(amountNum) ||
-      amountNum <= 0
-    ) {
-      return res.status(400).json({ error: "Input transaksi tidak valid" });
-    }
-
-    await connection.beginTransaction();
-
-    const [walletRows] = await connection.query(
-      `SELECT id FROM wallets WHERE id = ? AND user_id = 1 LIMIT 1`,
-      [walletIdNum],
-    );
-    if (walletRows.length === 0) {
-      await connection.rollback();
-      return res.status(404).json({ error: "Dompet tidak ditemukan" });
-    }
-
-    // Insert Transaction
-    const [result] = await connection.query(
-      `INSERT INTO transactions (user_id, wallet_id, type, amount, category, description, transaction_date) 
-       VALUES (1, ?, ?, ?, ?, ?, ?)`,
-      [walletIdNum, type, amountNum, category, description, transaction_date],
-    );
-
-    // Update Wallet Balance
-    const balanceChange = type === "income" ? amountNum : -amountNum;
-    await connection.query(
-      `UPDATE wallets SET balance = balance + ? WHERE id = ?`,
-      [balanceChange, walletIdNum],
-    );
-
-    await connection.commit();
-
-    res.json({ success: true, id: result.insertId });
-  } catch (err) {
-    await connection.rollback();
-    console.error(err);
-    res.status(500).json({ error: "Database error" });
-  } finally {
-    connection.release();
-  }
-});
-
-app.delete("/api/transactions/:id", async (req, res) => {
-  const connection = await db.getConnection();
-  try {
-    const { id } = req.params;
-    const txId = Number(id);
-    if (!txId)
-      return res.status(400).json({ error: "ID transaksi tidak valid" });
-
-    await connection.beginTransaction();
-
-    // Get transaction details first for balance correction
-    const [rows] = await connection.query(
-      `SELECT type, amount, wallet_id FROM transactions WHERE id = ? AND user_id = 1`,
-      [txId],
-    );
-    if (rows.length > 0) {
-      const { type, amount, wallet_id } = rows[0];
-      const balanceChange = type === "income" ? -amount : amount;
-
-      // Revert Wallet Balance
-      await connection.query(
-        `UPDATE wallets SET balance = balance + ? WHERE id = ?`,
-        [balanceChange, wallet_id],
-      );
-
-      // Delete Transaction
-      await connection.query(
-        `DELETE FROM transactions WHERE id = ? AND user_id = 1`,
-        [txId],
-      );
-      await connection.commit();
-      res.json({ success: true });
-    } else {
-      await connection.rollback();
-      res.status(404).json({ error: "Transaction not found" });
-    }
-  } catch (err) {
-    await connection.rollback();
-    console.error(err);
-    res.status(500).json({ error: "Database error" });
-  } finally {
-    connection.release();
-  }
-});
-
-app.put("/api/transactions/:id", async (req, res) => {
-  const connection = await db.getConnection();
-  try {
-    const { id } = req.params;
-    const { type, amount, category, description, wallet_id, transaction_date } =
-      req.body;
-    const txId = Number(id);
-    const walletIdNum = Number(wallet_id);
-    const amountNum = Number(amount);
-
-    if (
-      !txId ||
-      !["income", "expense"].includes(type) ||
-      !walletIdNum ||
-      !Number.isFinite(amountNum) ||
-      amountNum <= 0
-    ) {
-      return res
-        .status(400)
-        .json({ error: "Input update transaksi tidak valid" });
-    }
-
-    await connection.beginTransaction();
-
-    const [walletRows] = await connection.query(
-      `SELECT id FROM wallets WHERE id = ? AND user_id = 1 LIMIT 1`,
-      [walletIdNum],
-    );
-    if (walletRows.length === 0) {
-      await connection.rollback();
-      return res.status(404).json({ error: "Dompet tidak ditemukan" });
-    }
-
-    const [oldRows] = await connection.query(
-      `SELECT type, amount, wallet_id FROM transactions WHERE id = ? AND user_id = 1`,
-      [txId],
-    );
-    if (oldRows.length === 0) {
-      await connection.rollback();
-      return res.status(404).json({ error: "Transaction not found" });
-    }
-
-    // Normalisasi saldo dompet sebelumnya
-    const oldTx = oldRows[0];
-    const revertChange = oldTx.type === "income" ? -oldTx.amount : oldTx.amount;
-    await connection.query(
-      `UPDATE wallets SET balance = balance + ? WHERE id = ?`,
-      [revertChange, oldTx.wallet_id],
-    );
-
-    // Setel beban saldo dompet yang baru
-    const applyChange = type === "income" ? amountNum : -amountNum;
-    await connection.query(
-      `UPDATE wallets SET balance = balance + ? WHERE id = ?`,
-      [applyChange, walletIdNum],
-    );
-
-    // Simpan perubahan ke transaksi
-    await connection.query(
-      `UPDATE transactions SET wallet_id=?, type=?, amount=?, category=?, description=?, transaction_date=? WHERE id=?`,
-      [
-        walletIdNum,
+app.post(
+  "/api/transactions",
+  strictLimiter,
+  body("type")
+    .trim()
+    .isIn(["income", "expense"])
+    .withMessage("Type harus 'income' atau 'expense'"),
+  body("amount")
+    .isFloat({ min: 0.01 })
+    .withMessage("Amount harus angka positif"),
+  body("wallet_id")
+    .isInt({ min: 1 })
+    .withMessage("Wallet ID harus angka positif"),
+  body("category")
+    .optional()
+    .trim()
+    .isLength({ max: 50 })
+    .withMessage("Category maksimal 50 karakter"),
+  body("description")
+    .optional()
+    .trim()
+    .isLength({ max: 500 })
+    .withMessage("Description maksimal 500 karakter"),
+  body("transaction_date")
+    .optional()
+    .isISO8601()
+    .withMessage("Format tanggal tidak valid"),
+  validateRequest,
+  async (req, res) => {
+    const connection = await db.getConnection();
+    try {
+      const {
         type,
-        amountNum,
+        amount,
         category,
         description,
+        wallet_id,
         transaction_date,
-        txId,
-      ],
-    );
+      } = req.body;
+      const amountNum = Number(amount);
+      const walletIdNum = Number(wallet_id);
 
-    await connection.commit();
+      await connection.beginTransaction();
 
-    res.json({ success: true });
-  } catch (err) {
-    await connection.rollback();
-    console.error(err);
-    res.status(500).json({ error: "Database error" });
-  } finally {
-    connection.release();
-  }
-});
+      const [walletRows] = await connection.query(
+        `SELECT id FROM wallets WHERE id = ? AND user_id = 1 LIMIT 1`,
+        [walletIdNum],
+      );
+      if (walletRows.length === 0) {
+        await connection.rollback();
+        return res.status(404).json({ error: "Dompet tidak ditemukan" });
+      }
+
+      // Insert Transaction
+      const [result] = await connection.query(
+        `INSERT INTO transactions (user_id, wallet_id, type, amount, category, description, transaction_date) 
+         VALUES (1, ?, ?, ?, ?, ?, ?)`,
+        [walletIdNum, type, amountNum, category, description, transaction_date],
+      );
+
+      // Update Wallet Balance
+      const balanceChange = type === "income" ? amountNum : -amountNum;
+      await connection.query(
+        `UPDATE wallets SET balance = balance + ? WHERE id = ?`,
+        [balanceChange, walletIdNum],
+      );
+
+      await connection.commit();
+
+      res.json({ success: true, id: result.insertId });
+    } catch (err) {
+      await connection.rollback();
+      return handleApiError(req, res, err, "Database error");
+    } finally {
+      connection.release();
+    }
+  },
+);
+
+app.delete(
+  "/api/transactions/:id",
+  strictLimiter,
+  param("id").isInt({ min: 1 }).withMessage("ID transaksi tidak valid"),
+  validateRequest,
+  async (req, res) => {
+    const connection = await db.getConnection();
+    try {
+      const { id } = req.params;
+      const txId = Number(id);
+
+      await connection.beginTransaction();
+
+      // Get transaction details first for balance correction
+      const [rows] = await connection.query(
+        `SELECT type, amount, wallet_id FROM transactions WHERE id = ? AND user_id = 1`,
+        [txId],
+      );
+      if (rows.length > 0) {
+        const { type, amount, wallet_id } = rows[0];
+        const balanceChange = type === "income" ? -amount : amount;
+
+        // Revert Wallet Balance
+        await connection.query(
+          `UPDATE wallets SET balance = balance + ? WHERE id = ?`,
+          [balanceChange, wallet_id],
+        );
+
+        // Delete Transaction
+        await connection.query(
+          `DELETE FROM transactions WHERE id = ? AND user_id = 1`,
+          [txId],
+        );
+        await connection.commit();
+        res.json({ success: true });
+      } else {
+        await connection.rollback();
+        res.status(404).json({ error: "Transaction not found" });
+      }
+    } catch (err) {
+      await connection.rollback();
+      return handleApiError(req, res, err, "Database error");
+    } finally {
+      connection.release();
+    }
+  },
+);
+
+app.put(
+  "/api/transactions/:id",
+  strictLimiter,
+  param("id").isInt({ min: 1 }).withMessage("ID transaksi tidak valid"),
+  body("type")
+    .trim()
+    .isIn(["income", "expense"])
+    .withMessage("Type harus 'income' atau 'expense'"),
+  body("amount")
+    .isFloat({ min: 0.01 })
+    .withMessage("Amount harus angka positif"),
+  body("wallet_id")
+    .isInt({ min: 1 })
+    .withMessage("Wallet ID harus angka positif"),
+  body("category")
+    .optional()
+    .trim()
+    .isLength({ max: 50 })
+    .withMessage("Category maksimal 50 karakter"),
+  body("description")
+    .optional()
+    .trim()
+    .isLength({ max: 500 })
+    .withMessage("Description maksimal 500 karakter"),
+  body("transaction_date")
+    .optional()
+    .isISO8601()
+    .withMessage("Format tanggal tidak valid"),
+  validateRequest,
+  async (req, res) => {
+    const connection = await db.getConnection();
+    try {
+      const { id } = req.params;
+      const {
+        type,
+        amount,
+        category,
+        description,
+        wallet_id,
+        transaction_date,
+      } = req.body;
+      const txId = Number(id);
+      const walletIdNum = Number(wallet_id);
+      const amountNum = Number(amount);
+
+      await connection.beginTransaction();
+
+      const [walletRows] = await connection.query(
+        `SELECT id FROM wallets WHERE id = ? AND user_id = 1 LIMIT 1`,
+        [walletIdNum],
+      );
+      if (walletRows.length === 0) {
+        await connection.rollback();
+        return res.status(404).json({ error: "Dompet tidak ditemukan" });
+      }
+
+      const [oldRows] = await connection.query(
+        `SELECT type, amount, wallet_id FROM transactions WHERE id = ? AND user_id = 1`,
+        [txId],
+      );
+      if (oldRows.length === 0) {
+        await connection.rollback();
+        return res.status(404).json({ error: "Transaction not found" });
+      }
+
+      // Normalisasi saldo dompet sebelumnya
+      const oldTx = oldRows[0];
+      const revertChange =
+        oldTx.type === "income" ? -oldTx.amount : oldTx.amount;
+      await connection.query(
+        `UPDATE wallets SET balance = balance + ? WHERE id = ?`,
+        [revertChange, oldTx.wallet_id],
+      );
+
+      // Setel beban saldo dompet yang baru
+      const applyChange = type === "income" ? amountNum : -amountNum;
+      await connection.query(
+        `UPDATE wallets SET balance = balance + ? WHERE id = ?`,
+        [applyChange, walletIdNum],
+      );
+
+      // Simpan perubahan ke transaksi
+      await connection.query(
+        `UPDATE transactions SET wallet_id=?, type=?, amount=?, category=?, description=?, transaction_date=? WHERE id=?`,
+        [
+          walletIdNum,
+          type,
+          amountNum,
+          category,
+          description,
+          transaction_date,
+          txId,
+        ],
+      );
+
+      await connection.commit();
+
+      res.json({ success: true });
+    } catch (err) {
+      await connection.rollback();
+      return handleApiError(req, res, err, "Database error");
+    } finally {
+      connection.release();
+    }
+  },
+);
 
 app.get("/api/trends", async (req, res) => {
   try {
@@ -676,8 +1675,7 @@ app.get("/api/trends", async (req, res) => {
     );
     res.json(rows);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Database error" });
+    return handleApiError(req, res, err, "Database error");
   }
 });
 
@@ -694,8 +1692,7 @@ app.get("/api/categories/:type", async (req, res) => {
     );
     res.json(rows);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Database error" });
+    return handleApiError(req, res, err, "Database error");
   }
 });
 
@@ -906,8 +1903,7 @@ app.get("/api/reports/overview", async (req, res) => {
       },
     });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Database error" });
+    return handleApiError(req, res, err, "Database error");
   }
 });
 
@@ -955,8 +1951,7 @@ app.get("/api/market/suggest", async (req, res) => {
 
     res.json(unique.slice(0, 10));
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Gagal mencari ticker" });
+    return handleApiError(req, res, err, "Gagal mencari ticker");
   }
 });
 
@@ -972,8 +1967,7 @@ app.get("/api/debts", async (req, res) => {
 
     res.json(rows.map(normalizeDebtRow));
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Database error" });
+    return handleApiError(req, res, err, "Database error");
   }
 });
 
@@ -998,182 +1992,201 @@ app.get("/api/debts/installments", async (req, res) => {
       })),
     );
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Database error" });
+    return handleApiError(req, res, err, "Database error");
   }
 });
 
-app.post("/api/debts", async (req, res) => {
-  const connection = await db.getConnection();
-  try {
-    const {
-      name,
-      type,
-      debtType,
-      principal,
-      annualInterestRate,
-      interestRate,
-      tenorMonths,
-      startDate,
-      walletId,
-      notes,
-      elapsedMonths = 0,
-    } = req.body;
+app.post(
+  "/api/debts",
+  strictLimiter,
+  body("name")
+    .trim()
+    .notEmpty()
+    .withMessage("Nama hutang wajib diisi")
+    .isLength({ max: 100 })
+    .withMessage("Nama hutang maksimal 100 karakter"),
+  body("principal")
+    .isFloat({ min: 100 })
+    .withMessage("Pokok hutang minimal 100"),
+  body("tenorMonths").isInt({ min: 1 }).withMessage("Tenor harus positif"),
+  body("annualInterestRate")
+    .optional()
+    .isFloat({ min: 0, max: 100 })
+    .withMessage("Bunga antara 0-100%"),
+  body("interestRate")
+    .optional()
+    .isFloat({ min: 0, max: 100 })
+    .withMessage("Bunga antara 0-100%"),
+  body("walletId")
+    .optional()
+    .isInt({ min: 1 })
+    .withMessage("Wallet ID tidak valid"),
+  body("notes")
+    .optional()
+    .trim()
+    .isLength({ max: 500 })
+    .withMessage("Notes maksimal 500 karakter"),
+  validateRequest,
+  async (req, res) => {
+    const connection = await db.getConnection();
+    try {
+      const {
+        name,
+        type,
+        debtType,
+        principal,
+        annualInterestRate,
+        interestRate,
+        tenorMonths,
+        startDate,
+        walletId,
+        notes,
+        elapsedMonths = 0,
+      } = req.body;
 
-    const cleanName = String(name || "").trim();
-    const debtTypeValue = String(debtType || type || "other");
-    const principalValue = Number(principal);
-    const interestRateValue = Number(interestRate ?? annualInterestRate ?? 0);
-    const tenorMonthsValue = Number(tenorMonths);
-    const elapsedMonthsValue = Number(elapsedMonths || 0);
-    const startDateValue = startDate
-      ? toDateOnly(startDate)
-      : toDateOnly(new Date());
-    const walletIdValue = walletId ? Number(walletId) : null;
+      const cleanName = String(name || "").trim();
+      const debtTypeValue = String(debtType || type || "other");
+      const principalValue = Number(principal);
+      const interestRateValue = Number(interestRate ?? annualInterestRate ?? 0);
+      const tenorMonthsValue = Number(tenorMonths);
+      const elapsedMonthsValue = Number(elapsedMonths || 0);
+      const startDateValue = startDate
+        ? toDateOnly(startDate)
+        : toDateOnly(new Date());
+      const walletIdValue = walletId ? Number(walletId) : null;
 
-    if (!cleanName) {
-      return res.status(400).json({ error: "Nama hutang wajib diisi" });
-    }
-    if (!Number.isFinite(principalValue) || principalValue <= 0) {
-      return res.status(400).json({ error: "Pokok hutang tidak valid" });
-    }
-    if (!Number.isFinite(tenorMonthsValue) || tenorMonthsValue <= 0) {
-      return res.status(400).json({ error: "Tenor tidak valid" });
-    }
-    if (!Number.isFinite(interestRateValue) || interestRateValue < 0) {
-      return res.status(400).json({ error: "Bunga tidak valid" });
-    }
-
-    const snapshot = calculateDebtSnapshot(
-      principalValue,
-      interestRateValue,
-      tenorMonthsValue,
-      elapsedMonthsValue,
-    );
-
-    await connection.beginTransaction();
-
-    if (walletIdValue) {
-      const [walletRows] = await connection.query(
-        `SELECT id FROM wallets WHERE id = ? AND user_id = 1 LIMIT 1`,
-        [walletIdValue],
-      );
-
-      if (walletRows.length === 0) {
-        await connection.rollback();
-        return res.status(404).json({ error: "Dompet tidak ditemukan" });
-      }
-    }
-
-    const [insertResult] = await connection.query(
-      `INSERT INTO debts (
-        user_id, name, type, principal, annual_interest_rate, tenor_months,
-        monthly_payment, paid_amount, remaining_amount, elapsed_months, status,
-        start_date, wallet_id, notes
-      ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        cleanName,
-        debtTypeValue,
+      const snapshot = calculateDebtSnapshot(
         principalValue,
         interestRateValue,
         tenorMonthsValue,
-        snapshot.monthlyPayment,
-        snapshot.paidAmount,
-        snapshot.remainingAmount,
-        snapshot.paidMonths,
-        snapshot.status,
-        startDateValue,
-        walletIdValue,
-        notes ? String(notes).trim() : null,
-      ],
-    );
-
-    const debtId = insertResult.insertId;
-    const installmentRows = [];
-
-    for (let index = 0; index < snapshot.paidMonths; index += 1) {
-      const isLast = index === snapshot.paidMonths - 1;
-      const priorPaid = snapshot.monthlyPayment * index;
-      const amount = isLast
-        ? roundMoney(Math.max(0, snapshot.paidAmount - priorPaid))
-        : snapshot.monthlyPayment;
-
-      if (amount <= 0) continue;
-
-      installmentRows.push([
-        debtId,
-        1,
-        amount,
-        addMonthsToDate(startDateValue, index + 1),
-        `Cicilan ${index + 1}`,
-      ]);
-    }
-
-    if (installmentRows.length > 0) {
-      await connection.query(
-        `INSERT INTO debt_installments (debt_id, user_id, amount, paid_at, notes) VALUES ?`,
-        [installmentRows],
+        elapsedMonthsValue,
       );
-    }
 
-    await connection.commit();
+      await connection.beginTransaction();
 
-    const [createdRows] = await db.query(
-      `SELECT d.*, w.name AS wallet_name
-       FROM debts d
-       LEFT JOIN wallets w ON w.id = d.wallet_id
-       WHERE d.id = ? AND d.user_id = 1 LIMIT 1`,
-      [debtId],
-    );
+      if (walletIdValue) {
+        const [walletRows] = await connection.query(
+          `SELECT id FROM wallets WHERE id = ? AND user_id = 1 LIMIT 1`,
+          [walletIdValue],
+        );
 
-    res.json({
-      success: true,
-      debt: normalizeDebtRow(createdRows[0]),
-      installmentsCreated: installmentRows.length,
-    });
-  } catch (err) {
-    await connection.rollback();
-    console.error(err);
-    res.status(500).json({ error: "Database error" });
-  } finally {
-    connection.release();
-  }
-});
+        if (walletRows.length === 0) {
+          await connection.rollback();
+          return res.status(404).json({ error: "Dompet tidak ditemukan" });
+        }
+      }
 
-app.delete("/api/debts/:id", async (req, res) => {
-  const connection = await db.getConnection();
-  try {
-    const debtId = Number(req.params.id);
-    if (!debtId) {
-      return res.status(400).json({ error: "ID hutang tidak valid" });
-    }
+      const [insertResult] = await connection.query(
+        `INSERT INTO debts (
+          user_id, name, type, principal, annual_interest_rate, tenor_months,
+          monthly_payment, paid_amount, remaining_amount, elapsed_months, status,
+          start_date, wallet_id, notes
+        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          cleanName,
+          debtTypeValue,
+          principalValue,
+          interestRateValue,
+          tenorMonthsValue,
+          snapshot.monthlyPayment,
+          snapshot.paidAmount,
+          snapshot.remainingAmount,
+          snapshot.paidMonths,
+          snapshot.status,
+          startDateValue,
+          walletIdValue,
+          notes ? String(notes).trim() : null,
+        ],
+      );
 
-    await connection.beginTransaction();
+      const debtId = insertResult.insertId;
+      const installmentRows = [];
 
-    const [debtRows] = await connection.query(
-      `SELECT id FROM debts WHERE id = ? AND user_id = 1 LIMIT 1`,
-      [debtId],
-    );
+      for (let index = 0; index < snapshot.paidMonths; index += 1) {
+        const isLast = index === snapshot.paidMonths - 1;
+        const priorPaid = snapshot.monthlyPayment * index;
+        const amount = isLast
+          ? roundMoney(Math.max(0, snapshot.paidAmount - priorPaid))
+          : snapshot.monthlyPayment;
 
-    if (debtRows.length === 0) {
+        if (amount <= 0) continue;
+
+        installmentRows.push([
+          debtId,
+          1,
+          amount,
+          addMonthsToDate(startDateValue, index + 1),
+          `Cicilan ${index + 1}`,
+        ]);
+      }
+
+      if (installmentRows.length > 0) {
+        await connection.query(
+          `INSERT INTO debt_installments (debt_id, user_id, amount, paid_at, notes) VALUES ?`,
+          [installmentRows],
+        );
+      }
+
+      await connection.commit();
+
+      const [createdRows] = await db.query(
+        `SELECT d.*, w.name AS wallet_name
+         FROM debts d
+         LEFT JOIN wallets w ON w.id = d.wallet_id
+         WHERE d.id = ? AND d.user_id = 1 LIMIT 1`,
+        [debtId],
+      );
+
+      res.json({
+        success: true,
+        debt: normalizeDebtRow(createdRows[0]),
+        installmentsCreated: installmentRows.length,
+      });
+    } catch (err) {
       await connection.rollback();
-      return res.status(404).json({ error: "Hutang tidak ditemukan" });
+      return handleApiError(req, res, err, "Database error");
+    } finally {
+      connection.release();
     }
+  },
+);
 
-    await connection.query(`DELETE FROM debts WHERE id = ? AND user_id = 1`, [
-      debtId,
-    ]);
-    await connection.commit();
+app.delete(
+  "/api/debts/:id",
+  strictLimiter,
+  param("id").isInt({ min: 1 }).withMessage("ID hutang tidak valid"),
+  validateRequest,
+  async (req, res) => {
+    const connection = await db.getConnection();
+    try {
+      const debtId = Number(req.params.id);
 
-    res.json({ success: true });
-  } catch (err) {
-    await connection.rollback();
-    console.error(err);
-    res.status(500).json({ error: "Database error" });
-  } finally {
-    connection.release();
-  }
-});
+      await connection.beginTransaction();
+
+      const [debtRows] = await connection.query(
+        `SELECT id FROM debts WHERE id = ? AND user_id = 1 LIMIT 1`,
+        [debtId],
+      );
+
+      if (debtRows.length === 0) {
+        await connection.rollback();
+        return res.status(404).json({ error: "Hutang tidak ditemukan" });
+      }
+
+      await connection.query(`DELETE FROM debts WHERE id = ? AND user_id = 1`, [
+        debtId,
+      ]);
+      await connection.commit();
+
+      res.json({ success: true });
+    } catch (err) {
+      await connection.rollback();
+      return handleApiError(req, res, err, "Database error");
+    } finally {
+      connection.release();
+    }
+  },
+);
 
 // --- ASSET TRACKER API ---
 
@@ -1223,247 +2236,307 @@ app.get("/api/assets", async (req, res) => {
 
     res.json(processedAssets);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Database error" });
+    return handleApiError(req, res, err, "Database error");
   }
 });
 
-app.post("/api/assets", async (req, res) => {
-  const connection = await db.getConnection();
-  try {
-    const {
-      ticker,
-      name,
-      quantity,
-      purchase_price,
-      total_value,
-      broker,
-      unit_type,
-      wallet_id,
-      transaction_date,
-    } = req.body;
-    const finalTxDate =
-      transaction_date || new Date().toISOString().split("T")[0];
-    const normalizedTicker =
-      typeof ticker === "string" ? ticker.trim().toUpperCase() : "";
-    let inferredType = normalizedTicker ? "market" : "custom";
-
-    // Validasi ticker jika user mengisi ticker (mode otomatis jadi market)
-    let finalTicker = normalizedTicker || null;
-
-    if (finalTicker) {
-      try {
-        // --- LOGIKA CERDAS: Auto-Correction Ticker ---
-        let quote = null;
-        const attempts = [
-          finalTicker, // Asli (misal: BTC-USD atau BBCA.JK)
-          `${finalTicker}-USD`, // Jika itu Crypto (BTC -> BTC-USD)
-          `${finalTicker}.JK`, // Jika itu Saham Indo (BBCA -> BBCA.JK)
-        ];
-
-        let found = false;
-        for (const t of attempts) {
-          try {
-            quote = await yahooFinance.quote(t);
-            if (quote) {
-              finalTicker = t; // Gunakan yang berhasil ditemukan
-              found = true;
-              break;
-            }
-          } catch (e) {
-            continue;
-          }
-        }
-
-        if (!found) {
-          return res.status(400).json({
-            error: `Ticker '${finalTicker}' tidak ditemukan di pasar Global maupun Lokal.`,
-          });
-        }
-      } catch (e) {
-        return res
-          .status(400)
-          .json({ error: "Terjadi kesalahan sistem saat memvalidasi ticker." });
-      }
-    }
-
-    await connection.beginTransaction();
-
-    const [result] = await connection.query(
-      `INSERT INTO assets (user_id, type, ticker, name, quantity, purchase_price, total_value, broker, unit_type, wallet_id, transaction_date) 
-       VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        inferredType,
-        finalTicker,
-        name || finalTicker,
+app.post(
+  "/api/assets",
+  strictLimiter,
+  body("ticker")
+    .optional()
+    .trim()
+    .isLength({ max: 20 })
+    .withMessage("Ticker maksimal 20 karakter"),
+  body("name")
+    .optional()
+    .trim()
+    .isLength({ max: 100 })
+    .withMessage("Nama aset maksimal 100 karakter"),
+  body("quantity")
+    .isFloat({ min: 0.001 })
+    .withMessage("Jumlah harus angka positif"),
+  body("purchase_price")
+    .isFloat({ min: 0 })
+    .withMessage("Harga beli tidak boleh negatif"),
+  body("total_value")
+    .optional()
+    .isFloat({ min: 0 })
+    .withMessage("Total nilai tidak boleh negatif"),
+  body("wallet_id")
+    .optional()
+    .isInt({ min: 1 })
+    .withMessage("Wallet ID tidak valid"),
+  body("transaction_date")
+    .optional()
+    .isISO8601()
+    .withMessage("Format tanggal tidak valid"),
+  validateRequest,
+  async (req, res) => {
+    const connection = await db.getConnection();
+    try {
+      const {
+        ticker,
+        name,
         quantity,
         purchase_price,
         total_value,
         broker,
         unit_type,
         wallet_id,
-        finalTxDate,
-      ],
-    );
+        transaction_date,
+      } = req.body;
+      const finalTxDate =
+        transaction_date || new Date().toISOString().split("T")[0];
+      const normalizedTicker =
+        typeof ticker === "string" ? ticker.trim().toUpperCase() : "";
+      let inferredType = normalizedTicker ? "market" : "custom";
 
-    const assetId = result.insertId;
+      // Validasi ticker jika user mengisi ticker (mode otomatis jadi market)
+      let finalTicker = normalizedTicker || null;
 
-    // LOGIKA OTOMATIS: Potong Saldo Dompet jika wallet_id dipilih
-    if (wallet_id) {
-      const amountToDeduct =
-        inferredType === "market"
-          ? Number(purchase_price) * Number(quantity)
-          : Number(total_value);
+      if (finalTicker) {
+        try {
+          // --- LOGIKA CERDAS: Auto-Correction Ticker ---
+          let quote = null;
+          const attempts = [
+            finalTicker, // Asli (misal: BTC-USD atau BBCA.JK)
+            `${finalTicker}-USD`, // Jika itu Crypto (BTC -> BTC-USD)
+            `${finalTicker}.JK`, // Jika itu Saham Indo (BBCA -> BBCA.JK)
+          ];
 
-      // 1. Masukkan ke tabel Transaksi sebagai Pengeluaran Investasi (Diberi tag asset_id)
-      await connection.query(
-        `INSERT INTO transactions (user_id, wallet_id, type, amount, category, description, transaction_date, asset_id) 
-         VALUES (1, ?, 'expense', ?, 'Investasi', ?, ?, ?)`,
+          let found = false;
+          for (const t of attempts) {
+            try {
+              quote = await yahooFinance.quote(t);
+              if (quote) {
+                finalTicker = t; // Gunakan yang berhasil ditemukan
+                found = true;
+                break;
+              }
+            } catch (e) {
+              continue;
+            }
+          }
+
+          if (!found) {
+            return res.status(400).json({
+              error: `Ticker '${finalTicker}' tidak ditemukan di pasar Global maupun Lokal.`,
+            });
+          }
+        } catch (e) {
+          return res.status(400).json({
+            error: "Terjadi kesalahan sistem saat memvalidasi ticker.",
+          });
+        }
+      }
+
+      await connection.beginTransaction();
+
+      const [result] = await connection.query(
+        `INSERT INTO assets (user_id, type, ticker, name, quantity, purchase_price, total_value, broker, unit_type, wallet_id, transaction_date) 
+       VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
+          inferredType,
+          finalTicker,
+          name || finalTicker,
+          quantity,
+          purchase_price,
+          total_value,
+          broker,
+          unit_type,
           wallet_id,
-          amountToDeduct,
-          `Pembelian Aset: ${name || ticker}`,
           finalTxDate,
-          assetId,
         ],
       );
 
-      // 2. Update Saldo Dompet
-      await connection.query(
-        `UPDATE wallets SET balance = balance - ? WHERE id = ?`,
-        [amountToDeduct, wallet_id],
-      );
-    }
+      const assetId = result.insertId;
 
-    await connection.commit();
+      // LOGIKA OTOMATIS: Potong Saldo Dompet jika wallet_id dipilih
+      if (wallet_id) {
+        const amountToDeduct =
+          inferredType === "market"
+            ? Number(purchase_price) * Number(quantity)
+            : Number(total_value);
 
-    res.json({ success: true, id: assetId });
-  } catch (err) {
-    await connection.rollback();
-    console.error(err);
-    res.status(500).json({ error: "Database error" });
-  } finally {
-    connection.release();
-  }
-});
+        // 1. Masukkan ke tabel Transaksi sebagai Pengeluaran Investasi (Diberi tag asset_id)
+        await connection.query(
+          `INSERT INTO transactions (user_id, wallet_id, type, amount, category, description, transaction_date, asset_id) 
+         VALUES (1, ?, 'expense', ?, 'Investasi', ?, ?, ?)`,
+          [
+            wallet_id,
+            amountToDeduct,
+            `Pembelian Aset: ${name || ticker}`,
+            finalTxDate,
+            assetId,
+          ],
+        );
 
-app.post("/api/assets/yield", async (req, res) => {
-  const connection = await db.getConnection();
-  try {
-    const { asset_id, wallet_id, amount, description, transaction_date } =
-      req.body;
-    const finalDate =
-      transaction_date || new Date().toISOString().split("T")[0];
-    const amountNum = Number(amount);
+        // 2. Update Saldo Dompet
+        await connection.query(
+          `UPDATE wallets SET balance = balance - ? WHERE id = ?`,
+          [amountToDeduct, wallet_id],
+        );
+      }
 
-    if (
-      !asset_id ||
-      !wallet_id ||
-      !Number.isFinite(amountNum) ||
-      amountNum <= 0
-    ) {
-      return res
-        .status(400)
-        .json({ error: "Input hasil investasi tidak valid" });
-    }
+      await connection.commit();
 
-    await connection.beginTransaction();
-
-    // 1. Masukkan ke tabel Transaksi sebagai Pendapatan Aset
-    await connection.query(
-      `INSERT INTO transactions (user_id, wallet_id, type, amount, category, description, transaction_date, asset_id) 
-       VALUES (1, ?, 'income', ?, 'Hasil Investasi', ?, ?, ?)`,
-      [
-        wallet_id,
-        amountNum,
-        description || "Hasil berkala dari aset",
-        finalDate,
-        asset_id,
-      ],
-    );
-
-    // 2. Tambah Saldo Dompet
-    await connection.query(
-      `UPDATE wallets SET balance = balance + ? WHERE id = ?`,
-      [amountNum, wallet_id],
-    );
-
-    await connection.commit();
-
-    res.json({ success: true });
-  } catch (err) {
-    await connection.rollback();
-    console.error(err);
-    res.status(500).json({ error: "Database error" });
-  } finally {
-    connection.release();
-  }
-});
-
-app.delete("/api/assets/:id", async (req, res) => {
-  const connection = await db.getConnection();
-  try {
-    const { id } = req.params;
-    const assetId = Number(id);
-
-    if (!assetId) {
-      return res.status(400).json({ error: "ID aset tidak valid" });
-    }
-
-    await connection.beginTransaction();
-
-    const [assetRows] = await connection.query(
-      `SELECT id FROM assets WHERE id = ? AND user_id = 1 LIMIT 1`,
-      [assetId],
-    );
-
-    if (assetRows.length === 0) {
+      res.json({ success: true, id: assetId });
+    } catch (err) {
       await connection.rollback();
-      return res.status(404).json({ error: "Aset tidak ditemukan" });
+      return handleApiError(req, res, err, "Database error");
+    } finally {
+      connection.release();
     }
+  },
+);
 
-    // Balikkan efek transaksi aset ke saldo dompet agar dashboard tetap sinkron.
-    const [walletAdjustments] = await connection.query(
-      `SELECT wallet_id,
-              SUM(CASE WHEN type = 'expense' THEN amount WHEN type = 'income' THEN -amount ELSE 0 END) AS reverse_delta
-         FROM transactions
-        WHERE user_id = 1 AND asset_id = ?
-        GROUP BY wallet_id`,
-      [assetId],
-    );
+app.post(
+  "/api/assets/yield",
+  strictLimiter,
+  body("asset_id")
+    .isInt({ min: 1 })
+    .withMessage("Asset ID harus angka positif"),
+  body("wallet_id")
+    .isInt({ min: 1 })
+    .withMessage("Wallet ID harus angka positif"),
+  body("amount")
+    .isFloat({ min: 0.01 })
+    .withMessage("Jumlah harus angka positif"),
+  body("description")
+    .optional()
+    .trim()
+    .isLength({ max: 500 })
+    .withMessage("Deskripsi maksimal 500 karakter"),
+  body("transaction_date")
+    .optional()
+    .isISO8601()
+    .withMessage("Format tanggal tidak valid"),
+  validateRequest,
+  async (req, res) => {
+    const connection = await db.getConnection();
+    try {
+      const { asset_id, wallet_id, amount, description, transaction_date } =
+        req.body;
+      const finalDate =
+        transaction_date || new Date().toISOString().split("T")[0];
+      const amountNum = Number(amount);
 
-    for (const row of walletAdjustments) {
-      const walletId = Number(row.wallet_id);
-      const reverseDelta = Number(row.reverse_delta) || 0;
-      if (!walletId || reverseDelta === 0) continue;
+      await connection.beginTransaction();
 
+      // 1. Masukkan ke tabel Transaksi sebagai Pendapatan Aset
+      await connection.query(
+        `INSERT INTO transactions (user_id, wallet_id, type, amount, category, description, transaction_date, asset_id) 
+       VALUES (1, ?, 'income', ?, 'Hasil Investasi', ?, ?, ?)`,
+        [
+          wallet_id,
+          amountNum,
+          description || "Hasil berkala dari aset",
+          finalDate,
+          asset_id,
+        ],
+      );
+
+      // 2. Tambah Saldo Dompet
       await connection.query(
         `UPDATE wallets SET balance = balance + ? WHERE id = ?`,
-        [reverseDelta, walletId],
+        [amountNum, wallet_id],
       );
+
+      await connection.commit();
+
+      res.json({ success: true });
+    } catch (err) {
+      await connection.rollback();
+      return handleApiError(req, res, err, "Database error");
+    } finally {
+      connection.release();
     }
+  },
+);
 
-    await connection.query(
-      `DELETE FROM transactions WHERE user_id = 1 AND asset_id = ?`,
-      [assetId],
-    );
+app.delete(
+  "/api/assets/:id",
+  strictLimiter,
+  param("id").isInt({ min: 1 }).withMessage("ID aset tidak valid"),
+  validateRequest,
+  async (req, res) => {
+    const connection = await db.getConnection();
+    try {
+      const { id } = req.params;
+      const assetId = Number(id);
 
-    await connection.query(`DELETE FROM assets WHERE id = ? AND user_id = 1`, [
-      assetId,
-    ]);
+      await connection.beginTransaction();
 
-    await connection.commit();
+      const [assetRows] = await connection.query(
+        `SELECT id FROM assets WHERE id = ? AND user_id = 1 LIMIT 1`,
+        [assetId],
+      );
 
-    res.json({ success: true });
-  } catch (err) {
-    await connection.rollback();
-    console.error(err);
-    res.status(500).json({ error: "Database error" });
-  } finally {
-    connection.release();
-  }
-});
+      if (assetRows.length === 0) {
+        await connection.rollback();
+        return res.status(404).json({ error: "Aset tidak ditemukan" });
+      }
+
+      // Balikkan efek transaksi aset ke saldo dompet agar dashboard tetap sinkron.
+      const [walletAdjustments] = await connection.query(
+        `SELECT wallet_id,
+                SUM(CASE WHEN type = 'expense' THEN amount WHEN type = 'income' THEN -amount ELSE 0 END) AS reverse_delta
+           FROM transactions
+          WHERE user_id = 1 AND asset_id = ?
+          GROUP BY wallet_id`,
+        [assetId],
+      );
+
+      for (const row of walletAdjustments) {
+        const walletId = Number(row.wallet_id);
+        const reverseDelta = Number(row.reverse_delta) || 0;
+        if (!walletId || reverseDelta === 0) continue;
+
+        await connection.query(
+          `UPDATE wallets SET balance = balance + ? WHERE id = ?`,
+          [reverseDelta, walletId],
+        );
+      }
+
+      await connection.query(
+        `DELETE FROM transactions WHERE user_id = 1 AND asset_id = ?`,
+        [assetId],
+      );
+
+      await connection.query(
+        `DELETE FROM assets WHERE id = ? AND user_id = 1`,
+        [assetId],
+      );
+
+      await connection.commit();
+
+      res.json({ success: true });
+    } catch (err) {
+      await connection.rollback();
+      return handleApiError(req, res, err, "Database error");
+    } finally {
+      connection.release();
+    }
+  },
+);
 
 app.listen(port, () => {
   console.log(`🚀 Server running on http://localhost:${port}`);
+
+  // Kick off scheduler: initial run and then every hour.
+  setTimeout(() => {
+    runReminderJob("startup").catch((err) => {
+      console.error("[reminder] startup job failed:", err.message);
+    });
+  }, 1000);
+
+  setInterval(
+    () => {
+      runReminderJob("interval").catch((err) => {
+        console.error("[reminder] interval job failed:", err.message);
+      });
+    },
+    60 * 60 * 1000,
+  );
 });

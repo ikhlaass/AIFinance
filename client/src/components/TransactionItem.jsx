@@ -1,7 +1,7 @@
 import React from "react";
 import { Plus, Minus } from "lucide-react";
 
-const TransactionItem = ({ type, description, date, amount }) => {
+const TransactionItem = React.memo(({ type, description, date, amount }) => {
   const isIncome = type === "income";
 
   return (
@@ -24,6 +24,6 @@ const TransactionItem = ({ type, description, date, amount }) => {
       </div>
     </div>
   );
-};
+});
 
 export default TransactionItem;

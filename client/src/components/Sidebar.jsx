@@ -7,8 +7,6 @@ import {
   Briefcase,
   HandCoins,
   PieChart,
-  Users,
-  HelpCircle,
   Settings,
   LogOut,
   ChevronRight,
@@ -30,9 +28,7 @@ const menuItems = [
   { icon: Briefcase, label: "Aset Tracker", path: "/assets" },
   { icon: HandCoins, label: "Hutang", path: "/debts" },
   { icon: PieChart, label: "Laporan", path: "/reports" },
-  { icon: Users, label: "Affiliate", disabled: true },
-  { icon: HelpCircle, label: "Bantuan", disabled: true },
-  { icon: Settings, label: "Pengaturan", disabled: true },
+  { icon: Settings, label: "Pengaturan", path: "/settings" },
 ];
 
 const Sidebar = ({ theme, toggleTheme, isOpen, onClose }) => {

@@ -1,10 +1,18 @@
-import React, { useState, useEffect } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import TrendChart from "../components/TrendChart";
 import CategoryChart from "../components/CategoryChart";
 import TransactionItem from "../components/TransactionItem";
 import WalletGrid from "../components/WalletGrid";
 import AIInsightWidget from "../components/AIInsightWidget";
 import { TrendingUp, TrendingDown, PiggyBank, Wallet } from "lucide-react";
+
+const DASHBOARD_CACHE_TTL_MS = 60 * 1000;
+const dashboardCache = {
+  summary: null,
+  transactions: null,
+  summaryFetchedAt: 0,
+  transactionsFetchedAt: 0,
+};
 
 const Dashboard = () => {
   const [summary, setSummary] = useState({
@@ -21,6 +29,7 @@ const Dashboard = () => {
   });
   const [transactions, setTransactions] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [visibleTxCount, setVisibleTxCount] = useState(12);
 
   const formatRp = (num) => {
     return new Intl.NumberFormat("id-ID", {
@@ -45,33 +54,93 @@ const Dashboard = () => {
       : 0;
 
   useEffect(() => {
-    const fetchData = async () => {
+    let isMounted = true;
+
+    const hydrateFromCache = () => {
+      const now = Date.now();
+      const hasFreshSummary =
+        dashboardCache.summary &&
+        now - dashboardCache.summaryFetchedAt < DASHBOARD_CACHE_TTL_MS;
+      const hasFreshTransactions =
+        Array.isArray(dashboardCache.transactions) &&
+        now - dashboardCache.transactionsFetchedAt < DASHBOARD_CACHE_TTL_MS;
+
+      if (!hasFreshSummary && !hasFreshTransactions) return false;
+
+      if (hasFreshSummary && isMounted) {
+        setSummary(dashboardCache.summary);
+      }
+      if (hasFreshTransactions && isMounted) {
+        setTransactions(dashboardCache.transactions);
+      }
+      if (isMounted) {
+        setIsLoading(false);
+      }
+      return true;
+    };
+
+    const fetchData = async ({ force = false } = {}) => {
       try {
+        const now = Date.now();
+        const shouldFetchSummary =
+          force ||
+          !dashboardCache.summary ||
+          now - dashboardCache.summaryFetchedAt >= DASHBOARD_CACHE_TTL_MS;
+        const shouldFetchTransactions =
+          force ||
+          !Array.isArray(dashboardCache.transactions) ||
+          now - dashboardCache.transactionsFetchedAt >= DASHBOARD_CACHE_TTL_MS;
+
         const [summaryRes, transRes] = await Promise.all([
-          fetch("/api/dashboard/summary").then((res) => res.json()),
-          fetch("/api/transactions").then((res) => res.json()),
+          shouldFetchSummary
+            ? fetch("/api/dashboard/summary").then((res) => res.json())
+            : Promise.resolve(dashboardCache.summary),
+          shouldFetchTransactions
+            ? fetch("/api/transactions").then((res) => res.json())
+            : Promise.resolve(dashboardCache.transactions),
         ]);
 
-        if (summaryRes) setSummary(summaryRes);
-        if (transRes) setTransactions(transRes);
+        if (!isMounted) return;
+
+        if (summaryRes && !summaryRes.error) {
+          setSummary(summaryRes);
+          dashboardCache.summary = summaryRes;
+          dashboardCache.summaryFetchedAt = Date.now();
+        }
+        if (Array.isArray(transRes)) {
+          setTransactions(transRes);
+          dashboardCache.transactions = transRes;
+          dashboardCache.transactionsFetchedAt = Date.now();
+        }
       } catch (error) {
         console.error("Dashboard API Error:", error.message);
       } finally {
-        setIsLoading(false);
+        if (isMounted) {
+          setIsLoading(false);
+        }
       }
     };
 
-    fetchData();
+    const hasCache = hydrateFromCache();
+    fetchData({ force: !hasCache });
 
     const handlePortfolioChanged = () => {
-      fetchData();
+      fetchData({ force: true });
     };
 
     document.addEventListener("portfolio-changed", handlePortfolioChanged);
     return () => {
+      isMounted = false;
       document.removeEventListener("portfolio-changed", handlePortfolioChanged);
     };
   }, []);
+
+  const visibleTransactions = useMemo(
+    () => transactions.slice(0, visibleTxCount),
+    [transactions, visibleTxCount],
+  );
+
+  const hasMoreTransactions = transactions.length > visibleTxCount;
 
   const cashflowCards = [
     {
@@ -172,7 +241,7 @@ const Dashboard = () => {
           </div>
         </div>
 
-        <WalletGrid />
+        <WalletGrid manage={false} />
       </section>
 
       <section className="space-y-6">
@@ -267,7 +336,7 @@ const Dashboard = () => {
         </div>
         <div className="space-y-3 md:space-y-4">
           {transactions.length > 0 ? (
-            transactions.map((t, idx) => (
+            visibleTransactions.map((t, idx) => (
               <TransactionItem
                 key={t.id || idx}
                 type={t.type}
@@ -282,6 +351,17 @@ const Dashboard = () => {
             </p>
           )}
         </div>
+        {hasMoreTransactions && (
+          <div className="pt-4 flex justify-center">
+            <button
+              type="button"
+              onClick={() => setVisibleTxCount((prev) => prev + 12)}
+              className="text-[11px] font-bold text-primary uppercase tracking-widest hover:text-primary/80 transition-colors"
+            >
+              Muat lebih banyak
+            </button>
+          </div>
+        )}
       </section>
     </div>
   );

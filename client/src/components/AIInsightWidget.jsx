@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from "react";
-import axios from "axios";
 import { Sparkles, BrainCircuit } from "lucide-react";
 
 const AIInsightWidget = () => {
@@ -7,29 +6,13 @@ const AIInsightWidget = () => {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    const fetchInsight = async () => {
-      try {
-        const res = await axios.get("/api/dashboard/ai-insight");
-        if (res.data.insight) {
-          setInsight(res.data.insight);
-        } else {
-          setInsight(
-            "Keberhasilan finansial di masa depan dipupuk dari kedisiplinan mencatat hari ini!",
-          );
-        }
-      } catch (err) {
-        setInsight(
-          "Otak digital saya sedang istirahat sejenak, tapi dompet Anda tetap aman di sini.",
-        );
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    // Memberi sedikit jeda loading agar terasa lebih dramatis dan berat
     const timer = setTimeout(() => {
-      fetchInsight();
-    }, 1000);
+      setInsight(
+        "Otak digital saya sedang istirahat sejenak, tapi dompet Anda tetap aman di sini.",
+      );
+      setIsLoading(false);
+    }, 300);
+
     return () => clearTimeout(timer);
   }, []);
 
@@ -62,9 +45,11 @@ const AIInsightWidget = () => {
             <div className="h-3 bg-emerald-500/20 rounded-full w-[60%]"></div>
           </div>
         ) : (
-          <p className="text-text-main font-bold text-sm md:text-base lg:text-lg leading-relaxed tracking-wide animate-in fade-in duration-1000 slide-in-from-bottom-2 text-justify md:text-left">
-            "{insight}"
-          </p>
+          <div className="rounded-2xl border border-emerald-500/15 bg-white/70 dark:bg-slate-950/30 px-4 py-4 md:px-5 md:py-5 shadow-[0_8px_20px_rgba(15,23,42,0.05)]">
+            <p className="text-text-main font-semibold text-base md:text-lg leading-8 tracking-wide animate-in fade-in duration-1000 slide-in-from-bottom-2 text-left">
+              "{insight}"
+            </p>
+          </div>
         )}
       </div>
     </div>

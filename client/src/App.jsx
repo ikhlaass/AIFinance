@@ -1,11 +1,28 @@
-import React, { useState, useEffect } from "react";
+import React, { lazy, Suspense, useEffect, useState } from "react";
 import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
 import Layout from "./components/Layout";
-import Dashboard from "./pages/Dashboard";
-import Transactions from "./pages/Transactions";
-import Assets from "./pages/Assets";
-import Debts from "./pages/Debts";
-import Reports from "./pages/Reports";
+
+const loadDashboard = () => import("./pages/Dashboard");
+const loadTransactions = () => import("./pages/Transactions");
+const loadAssets = () => import("./pages/Assets");
+const loadDebts = () => import("./pages/Debts");
+const loadReports = () => import("./pages/Reports");
+const loadSettings = () => import("./pages/Settings");
+
+const Dashboard = lazy(loadDashboard);
+const Transactions = lazy(loadTransactions);
+const Assets = lazy(loadAssets);
+const Debts = lazy(loadDebts);
+const Reports = lazy(loadReports);
+const Settings = lazy(loadSettings);
+
+const RouteFallback = () => (
+  <div className="min-h-[50vh] flex items-center justify-center px-6">
+    <div className="text-center">
+      <p className="text-sm font-semibold text-text-muted">Memuat halaman...</p>
+    </div>
+  </div>
+);
 
 function App() {
   const [theme, setTheme] = useState(localStorage.getItem("theme") || "dark");
@@ -24,6 +41,31 @@ function App() {
     }
   }, [theme]);
 
+  useEffect(() => {
+    // Warm up secondary route chunks after initial UI becomes idle.
+    const prefetchRoutes = () => {
+      loadTransactions();
+      loadAssets();
+      loadDebts();
+      loadReports();
+      loadSettings();
+    };
+
+    if (typeof window.requestIdleCallback === "function") {
+      const idleId = window.requestIdleCallback(prefetchRoutes, {
+        timeout: 2000,
+      });
+      return () => {
+        if (typeof window.cancelIdleCallback === "function") {
+          window.cancelIdleCallback(idleId);
+        }
+      };
+    }
+
+    const timeoutId = window.setTimeout(prefetchRoutes, 1200);
+    return () => window.clearTimeout(timeoutId);
+  }, []);
+
   const toggleTheme = () => {
     setTheme((prev) => (prev === "dark" ? "light" : "dark"));
   };
@@ -32,16 +74,19 @@ function App() {
     <Router>
       <div className="w-full h-full transition-colors duration-300">
         <Layout theme={theme} toggleTheme={toggleTheme}>
-          <Routes>
-            <Route path="/" element={<Dashboard theme={theme} />} />
-            <Route
-              path="/transactions"
-              element={<Transactions theme={theme} />}
-            />
-            <Route path="/assets" element={<Assets theme={theme} />} />
-            <Route path="/debts" element={<Debts theme={theme} />} />
-            <Route path="/reports" element={<Reports theme={theme} />} />
-          </Routes>
+          <Suspense fallback={<RouteFallback />}>
+            <Routes>
+              <Route path="/" element={<Dashboard theme={theme} />} />
+              <Route
+                path="/transactions"
+                element={<Transactions theme={theme} />}
+              />
+              <Route path="/assets" element={<Assets theme={theme} />} />
+              <Route path="/debts" element={<Debts theme={theme} />} />
+              <Route path="/reports" element={<Reports theme={theme} />} />
+              <Route path="/settings" element={<Settings theme={theme} />} />
+            </Routes>
+          </Suspense>
         </Layout>
       </div>
     </Router>

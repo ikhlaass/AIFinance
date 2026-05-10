@@ -7,7 +7,7 @@ function cn(...inputs) {
   return twMerge(clsx(inputs));
 }
 
-const WalletItem = ({ wallet, onDelete }) => {
+const WalletItem = ({ wallet, onDelete, canDelete }) => {
   const formatRp = (num) =>
     new Intl.NumberFormat("id-ID", {
       style: "currency",
@@ -39,20 +39,22 @@ const WalletItem = ({ wallet, onDelete }) => {
         </div>
       </div>
 
-      <button
-        onClick={(e) => {
-          e.stopPropagation();
-          onDelete(wallet.id);
-        }}
-        className="opacity-0 group-hover:opacity-100 transition-all duration-300 p-1.5 text-text-muted hover:text-rose-500 hover:bg-rose-500/10 rounded-lg focus:outline-none"
-      >
-        <Trash2 size={12} />
-      </button>
+      {canDelete && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete(wallet.id);
+          }}
+          className="opacity-0 group-hover:opacity-100 transition-all duration-300 p-1.5 text-text-muted hover:text-rose-500 hover:bg-rose-500/10 rounded-lg focus:outline-none"
+        >
+          <Trash2 size={12} />
+        </button>
+      )}
     </div>
   );
 };
 
-const WalletGrid = () => {
+const WalletGrid = ({ manage = true }) => {
   const [wallets, setWallets] = useState([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [newWalletName, setNewWalletName] = useState("");
@@ -135,31 +137,33 @@ const WalletGrid = () => {
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-        {/* ADD WALLET BUTTON CARD */}
-        <button
-          onClick={() => setIsModalOpen(true)}
-          className="flex items-center justify-center gap-3 p-3 px-6 rounded-2xl border border-dashed border-card-border bg-card/50 hover:border-primary hover:bg-primary/5 transition-all duration-500 text-text-muted hover:text-primary group min-h-[60px] shadow-[0_10px_28px_rgba(15,23,42,0.08)] hover:shadow-[0_14px_36px_rgba(15,23,42,0.10)]"
-        >
-          <Plus
-            size={16}
-            className="group-hover:rotate-90 transition-transform duration-500"
-          />
-          <span className="text-[10px] font-black uppercase tracking-[0.2em] font-mono">
-            New Wallet
-          </span>
-        </button>
+        {manage && (
+          <button
+            onClick={() => setIsModalOpen(true)}
+            className="flex items-center justify-center gap-3 p-3 px-6 rounded-2xl border border-dashed border-card-border bg-card/50 hover:border-primary hover:bg-primary/5 transition-all duration-500 text-text-muted hover:text-primary group min-h-[60px] shadow-[0_10px_28px_rgba(15,23,42,0.08)] hover:shadow-[0_14px_36px_rgba(15,23,42,0.10)]"
+          >
+            <Plus
+              size={16}
+              className="group-hover:rotate-90 transition-transform duration-500"
+            />
+            <span className="text-[10px] font-black uppercase tracking-[0.2em] font-mono">
+              New Wallet
+            </span>
+          </button>
+        )}
 
         {wallets.map((wallet) => (
           <WalletItem
             key={wallet.id}
             wallet={wallet}
             onDelete={handleDeleteWallet}
+            canDelete={manage}
           />
         ))}
       </div>
 
       {/* CREATE WALLET MODAL */}
-      {isModalOpen && (
+      {manage && isModalOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
           <div
             className="absolute inset-0 bg-black/40 backdrop-blur-sm animate-in fade-in duration-300"

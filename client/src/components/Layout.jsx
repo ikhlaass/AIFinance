@@ -59,6 +59,9 @@ const Layout = ({ children, theme, toggleTheme }) => {
   } else if (location.pathname === "/reports") {
     title = "Laporan Keuangan";
     subtitle = "Analisis keuangan lengkap dalam satu halaman";
+  } else if (location.pathname === "/settings") {
+    title = "Pengaturan";
+    subtitle = "Kelola preferensi aplikasi dan integrasi";
   }
 
   return (

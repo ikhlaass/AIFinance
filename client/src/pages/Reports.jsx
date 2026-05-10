@@ -314,21 +314,21 @@ const Reports = () => {
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-card-border bg-card/95 p-2.5 shadow-[0_8px_22px_rgba(15,23,42,0.08)]">
+        <div className="flex gap-2 flex-row flex-nowrap items-center rounded-2xl border border-card-border bg-card/95 p-2.5 shadow-[0_8px_22px_rgba(15,23,42,0.08)] overflow-x-auto pb-1">
           <button
             onClick={() => window.print()}
-            className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-card-border bg-card text-sm font-bold text-text-main hover:bg-body/70"
+            className="inline-flex shrink-0 items-center gap-2 px-3 py-2 rounded-xl border border-card-border bg-card text-sm font-bold text-text-main hover:bg-body/70"
           >
             <FileDown size={16} /> PDF
           </button>
           <button
             onClick={exportCsv}
-            className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-card-border bg-card text-sm font-bold text-text-main hover:bg-body/70"
+            className="inline-flex shrink-0 items-center gap-2 px-3 py-2 rounded-xl border border-card-border bg-card text-sm font-bold text-text-main hover:bg-body/70"
           >
             <FileDown size={16} /> CSV
           </button>
 
-          <div className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-card-border bg-card min-w-[170px]">
+          <div className="inline-flex shrink-0 items-center gap-2 px-3 py-2 rounded-xl border border-card-border bg-card min-w-[170px]">
             <CalendarRange size={16} className="text-text-muted" />
             <select
               value={period}

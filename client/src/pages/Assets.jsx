@@ -385,14 +385,14 @@ const Assets = () => {
       <section className="bg-card card-gradient rounded-[2.5rem] p-8 md:p-12 border border-card-border shadow-2xl relative overflow-hidden group">
         <div className="absolute top-0 right-0 w-64 h-64 bg-primary/10 rounded-full blur-3xl -mr-20 -mt-20 group-hover:bg-primary/20 transition-all duration-1000"></div>
         <div className="relative z-10 flex flex-col md:flex-row justify-between items-center gap-6">
-          <div className="text-center md:text-left">
+          <div className="min-w-0 text-center md:text-left">
             <p className="text-[10px] font-bold text-primary uppercase tracking-[0.2em] mb-2 font-mono">
               Total Portfolio Value
             </p>
-            <h2 className="text-5xl md:text-7xl font-black text-text-main tracking-tighter">
+            <h2 className="text-4xl sm:text-5xl md:text-6xl lg:text-7xl xl:text-8xl font-black text-text-main tracking-tighter leading-tight break-words">
               {formatRp(totalPortfolioValue)}
             </h2>
-            <p className="text-[11px] text-text-muted font-medium mt-3 max-w-xl">
+            <p className="text-sm text-text-muted font-medium mt-3 max-w-xl break-words">
               Gabungan aset pasar yang bergerak otomatis dan aset statis yang
               mengikuti perjanjian atau pencairan.
             </p>

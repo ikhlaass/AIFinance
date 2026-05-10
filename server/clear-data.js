@@ -8,6 +8,8 @@ async function clearData() {
 
     // Keep users table intact because app uses hardcoded user_id = 1.
     await connection.query("SET FOREIGN_KEY_CHECKS = 0");
+    await connection.query("TRUNCATE TABLE debt_reminder_job_logs");
+    await connection.query("TRUNCATE TABLE debt_reminder_logs");
     await connection.query("TRUNCATE TABLE debt_installments");
     await connection.query("TRUNCATE TABLE debts");
     await connection.query("TRUNCATE TABLE transactions");
