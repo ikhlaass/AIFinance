@@ -1682,13 +1682,26 @@ app.get("/api/trends", async (req, res) => {
 app.get("/api/categories/:type", async (req, res) => {
   try {
     const { type } = req.params;
+    if (type !== "income" && type !== "expense") {
+      return res.status(400).json({ error: "Tipe kategori tidak valid" });
+    }
+
+    const recentDays = Math.min(
+      180,
+      Math.max(7, Number(req.query.recent_days) || 90),
+    );
+    const limit = Math.min(12, Math.max(3, Number(req.query.limit) || 6));
+
     const [rows] = await db.query(
-      `SELECT category, SUM(amount) as total 
-       FROM transactions 
-       WHERE user_id = 1 AND type = ? 
-       GROUP BY category 
-       ORDER BY total DESC`,
-      [type],
+      `SELECT category, SUM(amount) as total
+       FROM transactions
+       WHERE user_id = 1
+         AND type = ?
+         AND transaction_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+       GROUP BY category
+       ORDER BY total DESC
+       LIMIT ?`,
+      [type, recentDays, limit],
     );
     res.json(rows);
   } catch (err) {

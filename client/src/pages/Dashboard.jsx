@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import TrendChart from "../components/TrendChart";
 import CategoryChart from "../components/CategoryChart";
 import TransactionItem from "../components/TransactionItem";
@@ -7,6 +8,7 @@ import AIInsightWidget from "../components/AIInsightWidget";
 import { TrendingUp, TrendingDown, PiggyBank, Wallet } from "lucide-react";
 
 const DASHBOARD_CACHE_TTL_MS = 60 * 1000;
+const DASHBOARD_TX_LIMIT = 8;
 const dashboardCache = {
   summary: null,
   transactions: null,
@@ -29,7 +31,6 @@ const Dashboard = () => {
   });
   const [transactions, setTransactions] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [visibleTxCount, setVisibleTxCount] = useState(12);
 
   const formatRp = (num) => {
     return new Intl.NumberFormat("id-ID", {
@@ -96,7 +97,9 @@ const Dashboard = () => {
             ? fetch("/api/dashboard/summary").then((res) => res.json())
             : Promise.resolve(dashboardCache.summary),
           shouldFetchTransactions
-            ? fetch("/api/transactions").then((res) => res.json())
+            ? fetch(`/api/transactions?limit=${DASHBOARD_TX_LIMIT}`).then(
+                (res) => res.json(),
+              )
             : Promise.resolve(dashboardCache.transactions),
         ]);
 
@@ -136,11 +139,9 @@ const Dashboard = () => {
   }, []);
 
   const visibleTransactions = useMemo(
-    () => transactions.slice(0, visibleTxCount),
-    [transactions, visibleTxCount],
+    () => transactions.slice(0, DASHBOARD_TX_LIMIT),
+    [transactions],
   );
-
-  const hasMoreTransactions = transactions.length > visibleTxCount;
 
   const cashflowCards = [
     {
@@ -330,9 +331,12 @@ const Dashboard = () => {
           <h3 className="text-sm font-bold text-text-main uppercase tracking-widest">
             Transaksi Terbaru
           </h3>
-          <button className="text-[10px] font-bold text-primary uppercase tracking-widest hover:text-primary transition-colors">
+          <Link
+            to="/transactions"
+            className="text-[10px] font-bold text-primary uppercase tracking-widest hover:text-primary/80 transition-colors"
+          >
             Lihat semua
-          </button>
+          </Link>
         </div>
         <div className="space-y-3 md:space-y-4">
           {transactions.length > 0 ? (
@@ -351,16 +355,10 @@ const Dashboard = () => {
             </p>
           )}
         </div>
-        {hasMoreTransactions && (
-          <div className="pt-4 flex justify-center">
-            <button
-              type="button"
-              onClick={() => setVisibleTxCount((prev) => prev + 12)}
-              className="text-[11px] font-bold text-primary uppercase tracking-widest hover:text-primary/80 transition-colors"
-            >
-              Muat lebih banyak
-            </button>
-          </div>
+        {transactions.length > DASHBOARD_TX_LIMIT && (
+          <p className="pt-4 text-center text-[11px] font-semibold text-text-muted">
+            Menampilkan {DASHBOARD_TX_LIMIT} transaksi terbaru.
+          </p>
         )}
       </section>
     </div>

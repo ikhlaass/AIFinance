@@ -218,11 +218,16 @@ if (bot) {
 
       const userId = 1;
 
+      // create pending assignment record early so callbacks can reference it
+      const pendingPayload = { parsed: data, originalText: text };
+      const pendingId = await createPendingAssignment(userId, pendingPayload);
+
       // If AI returned a wallet_name, try exact match first
       if (data.wallet_name && String(data.wallet_name).trim()) {
+        const walletNameGuess = String(data.wallet_name).trim();
         const [walletRows] = await db.query(
           "SELECT id, name FROM wallets WHERE user_id = ? AND name LIKE ? LIMIT 1",
-          [userId, `%${data.wallet_name}%`],
+          [userId, `%${walletNameGuess}%`],
         );
         if (walletRows.length > 0) {
           const wallet = walletRows[0];
@@ -246,6 +251,11 @@ if (bot) {
             [amount, wallet.id],
           );
 
+          // remove pending since we handled it automatically
+          await db.query(`DELETE FROM ai_pending_assignments WHERE id = ?`, [
+            pendingId,
+          ]);
+
           const emoji = data.type === "expense" ? "🔴" : "🟢";
           const statusText = `🪄 *Struk/Audio Berhasil Diproses!*\n\n${emoji} **${data.type === "expense" ? "Pengeluaran" : "Pemasukan"}**\n📝 ${data.description}\n💰 Rp ${Number(data.amount).toLocaleString("id-ID")}\n📂 ${data.category}\n💳 ${wallet.name}\n📅 ${data.date}`;
 
@@ -258,6 +268,41 @@ if (bot) {
           );
           return;
         }
+
+        // wallet_name provided but not found: ask specifically to create it or choose other
+        const keyboardCreate = [
+          [
+            {
+              text: `Buat dompet "${walletNameGuess}" dan catat`,
+              callback_data: `create_wallet:${pendingId}:${encodeURIComponent(
+                walletNameGuess,
+              )}`,
+            },
+          ],
+          [
+            {
+              text: "Gunakan Dompet Lain",
+              callback_data: `assign:${pendingId}:0`,
+            },
+            {
+              text: "Lewati / Tandai Nanti",
+              callback_data: `assign:${pendingId}:skip`,
+            },
+          ],
+        ];
+
+        const promptMsgNameNotFound = `Saya mendeteksi nama dompet yang disebut: *${walletNameGuess}*, tapi tidak ditemukan di daftar dompet Anda. Mau saya buat dompet baru dengan nama tersebut atau pilih dompet lain?`;
+        await ctx.telegram.editMessageText(
+          ctx.chat.id,
+          waitMsg.message_id,
+          undefined,
+          promptMsgNameNotFound,
+          {
+            parse_mode: "Markdown",
+            reply_markup: { inline_keyboard: keyboardCreate },
+          },
+        );
+        return;
       }
 
       // No clear wallet — prepare candidate list and ask user to choose
@@ -327,9 +372,7 @@ if (bot) {
         return;
       }
 
-      // create pending assignment record
-      const pendingPayload = { parsed: data, originalText: text };
-      const pendingId = await createPendingAssignment(userId, pendingPayload);
+      // pending record already created earlier
 
       // build inline keyboard: each wallet candidate + options
       const keyboard = candidates
@@ -367,12 +410,16 @@ if (bot) {
       );
     } catch (err) {
       console.error("❌ Error Bot:", err.message);
-      await ctx.telegram.editMessageText(
-        ctx.chat.id,
-        waitMsg.message_id,
-        undefined,
-        `❌ Yah gagal: ${err.message}`,
-      );
+      try {
+        await ctx.telegram.editMessageText(
+          ctx.chat.id,
+          waitMsg.message_id,
+          undefined,
+          `❌ Yah gagal: ${err.message}`,
+        );
+      } catch (editErr) {
+        console.error("❌ Gagal update pesan error Bot:", editErr.message);
+      }
     }
   });
 
@@ -380,11 +427,78 @@ if (bot) {
   bot.on("callback_query", async (ctx) => {
     try {
       const dataStr = String(ctx.callbackQuery?.data || "");
-      if (!dataStr.startsWith("assign:")) return ctx.answerCbQuery();
+      if (
+        !dataStr.startsWith("assign:") &&
+        !dataStr.startsWith("create_wallet:")
+      )
+        return ctx.answerCbQuery();
       // format: assign:{pendingId}:{walletId|0|skip}
       const parts = dataStr.split(":");
       const pendingId = Number(parts[1] || 0);
       const walletPart = parts[2] || "skip";
+
+      // handle create_wallet:format => create_wallet:{pendingId}:{encodedName}
+      if (dataStr.startsWith("create_wallet:")) {
+        const encodedName = parts.slice(2).join(":") || "";
+        const walletName = decodeURIComponent(encodedName);
+        if (!pendingId) {
+          await ctx.answerCbQuery("Tautan kadaluarsa atau tidak valid", {
+            show_alert: true,
+          });
+          return;
+        }
+
+        const [rows] = await db.query(
+          `SELECT payload FROM ai_pending_assignments WHERE id = ? LIMIT 1`,
+          [pendingId],
+        );
+        if (!rows || rows.length === 0) {
+          await ctx.answerCbQuery(
+            "Permintaan tidak ditemukan atau sudah diproses",
+            { show_alert: true },
+          );
+          return;
+        }
+        const payload = JSON.parse(rows[0].payload || "{}");
+        const parsed = payload.parsed || {};
+
+        // create wallet and assign
+        const [res] = await db.query(
+          "INSERT INTO wallets (user_id, name, balance, is_active) VALUES (?, ?, 0, 1)",
+          [1, walletName],
+        );
+        const newWalletId = res.insertId;
+        const amount = Number(parsed.amount || 0);
+        await db.query(
+          `INSERT INTO transactions (user_id, wallet_id, type, amount, category, description, transaction_date) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [
+            1,
+            newWalletId,
+            parsed.type,
+            amount,
+            parsed.category,
+            parsed.description,
+            parsed.date,
+          ],
+        );
+        await db.query(
+          parsed.type === "expense"
+            ? "UPDATE wallets SET balance = balance - ? WHERE id = ?"
+            : "UPDATE wallets SET balance = balance + ? WHERE id = ?",
+          [amount, newWalletId],
+        );
+
+        await db.query(`DELETE FROM ai_pending_assignments WHERE id = ?`, [
+          pendingId,
+        ]);
+
+        const emoji = parsed.type === "expense" ? "🔴" : "🟢";
+        const statusText = `🪄 *Transaksi dicatat ke dompet baru!*\n\n${emoji} **${parsed.type === "expense" ? "Pengeluaran" : "Pemasukan"}**\n📝 ${parsed.description}\n💰 Rp ${Number(parsed.amount).toLocaleString("id-ID")}\n📂 ${parsed.category}\n💳 ${walletName}\n📅 ${parsed.date}`;
+
+        await ctx.editMessageText(statusText, { parse_mode: "Markdown" });
+        await ctx.answerCbQuery();
+        return;
+      }
 
       if (!pendingId) {
         await ctx.answerCbQuery("Tautan kadaluarsa atau tidak valid", {
